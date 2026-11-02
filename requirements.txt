@@ -1,0 +1,63 @@
+# CPU-only PyTorch build. If a CUDA GPU is available on the target machine,
+# swap this index url / package version for a matching cu12x wheel and set
+# BORDERWATCH_DEVICE=cuda (see backend/config.py for auto-detection).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1+cpu
+torchvision==0.18.1+cpu
+
+numpy==1.26.4
+opencv-python==4.10.0.84
+ultralytics==8.3.130
+lap==0.5.12
+# Runs the YOLO11n INT8 detector (models/yolo11n_int8_openvino_model) about
+# 1.6x faster than PyTorch on a CPU. Without it the detector falls back to
+# models/yolo11n.pt. Re-exporting the INT8 model also needs nncf==2.14.1
+# (see scripts/benchmark_detector.py); running it does not.
+openvino==2024.6.0
+
+fastapi
+uvicorn[standard]
+python-multipart
+pyyaml
+
+# ANPR OCR fallback. Thin wrapper around the SYSTEM tesseract binary (not a pip
+# package) - install separately:
+#   Windows: winget install --id UB-Mannheim.TesseractOCR -e
+#   Debian/Ubuntu: sudo apt install tesseract-ocr
+#   macOS: brew install tesseract
+# Without the system binary, ANPR falls back further (OCR text stays empty).
+# Sign in with Google: verifies the ID token (backend/api/auth_routes.py).
+# Needs requests for the transport.
+google-auth==2.40.3
+requests
+
+pytesseract
+
+# ANPR primary detector/OCR: a real trained plate detector (open-image-models,
+# ONNX YOLO) and a plate-specialized OCR model (fast-plate-ocr, ONNX CCT) --
+# both from the same author's fast-alpr project. Installed with --no-deps and
+# these three explicit extras only, deliberately skipping opencv-python-headless
+# (would shadow the pinned opencv-python==4.10.0.84 above) and letting numpy
+# stay pinned. Models download once from GitHub releases on first use, then run
+# fully offline. Falls back to Tesseract automatically if unavailable.
+#   pip install --no-deps "fast-plate-ocr[onnx]" "open-image-models[onnx]" onnxruntime rich
+fast-plate-ocr==1.1.0
+open-image-models==0.6.0
+onnxruntime==1.29.0
+rich==15.0.0
+
+# AI analyst agents (backend/agent). Claude through the official SDK; the
+# offline fallback talks to a local Ollama server over HTTP and needs no
+# package here. Ollama itself installs separately: https://ollama.com
+anthropic==1.15.0
+
+# Appearance search (backend/live/appearance.py): CLIP ViT-B/32 on the CPU.
+# Install it with torch pinned, or pip may swap the CPU torch build above:
+#   pip install open_clip_torch==3.3.0 -c <file with torch==2.3.1+cpu and torchvision==0.18.1+cpu>
+# Then fetch the weights once (about 600 MB): python scripts/download_search_model.py
+open_clip_torch==3.3.0
+timm==1.0.30
+huggingface_hub==2.2.0
+
+pytest
+httpx

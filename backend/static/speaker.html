@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Drishti Speaker</title>
+<meta name="theme-color" content="#0a0f16">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; min-height: 100vh; background: #0a0f16; color: #e6edf3;
+         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         display: flex; flex-direction: column;
+         padding: env(safe-area-inset-top, 0px) 16px env(safe-area-inset-bottom, 0px); }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+           padding: 16px 0 12px; border-bottom: 1px solid #1e2a38; }
+  .brand { font-size: 14px; letter-spacing: .14em; text-transform: uppercase; color: #8aa0b6; }
+  .conn { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #8aa0b6; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #55606c; }
+  .dot.up { background: #31c48d; box-shadow: 0 0 10px #31c48d; }
+  main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+         text-align: center; gap: 20px; padding: 24px 0; }
+  .state { font-size: 13px; letter-spacing: .2em; text-transform: uppercase; color: #8aa0b6; }
+  h1 { font-size: clamp(28px, 8vw, 48px); font-weight: 800; margin: 0; line-height: 1.1; }
+  .sub { font-size: 15px; color: #b6c6d6; max-width: 560px; margin: 0; line-height: 1.45; }
+  button { font: inherit; font-weight: 700; border: 0; border-radius: 14px; padding: 18px 30px;
+           font-size: 18px; cursor: pointer; min-width: 240px; background: #1f6feb; color: #fff; }
+  button.plain { background: #30363d; color: #e6edf3; font-size: 15px; padding: 12px 20px; min-width: 0; }
+  select { font: inherit; background: #16212a; color: #e6edf3; border: 1px solid #1e2a38;
+           border-radius: 8px; padding: 8px 10px; }
+  body.speaking { background: #2b1606; }
+  #log { font-size: 12px; color: #7c8b9a; max-width: 520px; width: 100%; text-align: left; }
+  #log div { padding: 4px 0; border-top: 1px solid #1e2a38; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">Drishti · Speaker</span>
+  <span class="conn"><span class="dot" id="dot"></span><span id="conn">not started</span></span>
+</header>
+<main>
+  <span class="state">Talk-down speaker</span>
+  <h1 id="cam">—</h1>
+  <p class="sub" id="sub">Place this device with a loudspeaker near the camera. When someone approaches the
+    restricted zone, it plays a spoken warning.</p>
+  <label class="sub">Language
+    <select id="lang">
+      <option value="both">Hindi, then English</option>
+      <option value="hi">Hindi only</option>
+      <option value="en">English only</option>
+    </select>
+  </label>
+  <button id="arm">Start speaker</button>
+  <button class="plain" id="test" hidden>Play a test warning here</button>
+  <div id="log"></div>
+</main>
+<script>
+(() => {
+  const $ = (x) => document.getElementById(x);
+  const camera = new URLSearchParams(location.search).get("camera") || "";
+  $("cam").textContent = camera || "No camera chosen";
+  if (!camera) {
+    $("sub").textContent = "Open this page from the Speaker link on the Live Monitor, so it knows which camera it serves.";
+    $("arm").hidden = true;
+    return;
+  }
+  const LANG_KEY = "drishti-speaker-lang";
+  try { $("lang").value = localStorage.getItem(LANG_KEY) || "both"; } catch (_) {}
+  $("lang").onchange = () => { try { localStorage.setItem(LANG_KEY, $("lang").value); } catch (_) {} };
+
+  const SAMPLE = {
+    hi: "रुकिए! यह प्रतिबंधित सीमा क्षेत्र है। आप कैमरे की निगरानी में हैं। तुरंत पीछे हटें।",
+    en: "Stop. This is a restricted border area. You are being watched on camera. Turn back now.",
+  };
+  let audio = null;
+
+  function log(text) {
+    const row = document.createElement("div");
+    row.textContent = new Date().toLocaleTimeString() + "  " + text;
+    $("log").prepend(row);
+  }
+
+  function voiceFor(lang) {
+    const voices = speechSynthesis.getVoices();
+    return voices.find((v) => v.lang && v.lang.toLowerCase().startsWith(lang)) || null;
+  }
+
+  // Two sharp tones first: people turn toward a sound before they listen to words.
+  function attention() {
+    if (!audio) return Promise.resolve();
+    const t = audio.currentTime;
+    [0, 0.35].forEach((offset) => {
+      const osc = audio.createOscillator(), gain = audio.createGain();
+      osc.frequency.value = 1400;
+      gain.gain.setValueAtTime(0.0001, t + offset);
+      gain.gain.exponentialRampToValueAtTime(0.9, t + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + offset + 0.25);
+      osc.connect(gain).connect(audio.destination);
+      osc.start(t + offset); osc.stop(t + offset + 0.3);
+    });
+    return new Promise((r) => setTimeout(r, 750));
+  }
+
+  function say(text, lang) {
+    return new Promise((resolve) => {
+      if (!("speechSynthesis" in window)) return resolve();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = lang === "hi" ? "hi-IN" : "en-IN";
+      const v = voiceFor(lang);
+      if (v) u.voice = v;
+      u.rate = 0.92; u.volume = 1;
+      u.onend = u.onerror = () => resolve();
+      speechSynthesis.speak(u);
+    });
+  }
+
+  let busy = false;
+  async function warn(lines, why) {
+    if (busy) return;
+    busy = true;
+    document.body.classList.add("speaking");
+    log(why || "warning");
+    const choice = $("lang").value;
+    // Without a Hindi voice on the device, Hindi text is read badly or not at
+    // all, so the English line is spoken instead.
+    const order = choice === "both" ? ["hi", "en"] : [choice];
+    await attention();
+    for (const lang of order) {
+      const use = lang === "hi" && !voiceFor("hi") ? "en" : lang;
+      if (use !== lang && order.includes("en")) continue;
+      await say(lines[use] || SAMPLE[use], use);
+    }
+    document.body.classList.remove("speaking");
+    busy = false;
+  }
+
+  $("test").onclick = () => warn(SAMPLE, "test warning (played here only)");
+
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${proto}//${location.host}/api/live/ws/speaker?camera=${encodeURIComponent(camera)}`);
+    ws.onmessage = (m) => {
+      const msg = JSON.parse(m.data);
+      if (msg.type === "ready") {
+        $("dot").className = "dot up"; $("conn").textContent = "connected";
+        $("cam").textContent = msg.camera;
+      } else if (msg.type === "warn") {
+        warn(msg.lines, msg.reason);
+      } else if (msg.type === "error") {
+        $("sub").textContent = msg.detail;
+      }
+    };
+    ws.onclose = () => {
+      $("dot").className = "dot"; $("conn").textContent = "reconnecting…";
+      setTimeout(connect, 3000);
+    };
+  }
+
+  $("arm").onclick = () => {
+    // Browsers only allow sound after a tap, which is why this button exists.
+    audio = new (window.AudioContext || window.webkitAudioContext)();
+    if ("speechSynthesis" in window) speechSynthesis.getVoices();
+    try { navigator.wakeLock && navigator.wakeLock.request("screen"); } catch (_) {}
+    $("arm").hidden = true;
+    $("test").hidden = false;
+    $("sub").textContent = "Ready. Keep this page open and the volume up.";
+    connect();
+  };
+})();
+</script>
+</body>
+</html>

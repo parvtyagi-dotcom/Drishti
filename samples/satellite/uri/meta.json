@@ -1,0 +1,26 @@
+{
+  "id": "uri",
+  "name": "Uri, Baramulla (Kashmir, near the LoC)",
+  "note": "Jhelum valley at Uri, about 10 km from the Line of Control. Expect harvested paddy terraces, river-bank changes and new tracks on the slopes.",
+  "bbox": [
+    74.0,
+    34.065,
+    74.06,
+    34.1
+  ],
+  "epsg": 32643,
+  "utm": [
+    407720,
+    3769760,
+    413300,
+    3773700
+  ],
+  "pixel_m": 10,
+  "source": "Copernicus Sentinel-2 L2A via Element84 Earth Search (AWS open data)",
+  "before_date": "2026-09-26",
+  "after_date": "2026-10-21",
+  "before_scene": "S2C_43SDT_20260926_0_L2A",
+  "after_scene": "S2B_43SDT_20261021_0_L2A",
+  "before_cloud": 0.0,
+  "after_cloud": 0.0
+}

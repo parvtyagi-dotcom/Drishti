@@ -1,0 +1,26 @@
+{
+  "id": "attari",
+  "name": "Attari fields, Punjab border",
+  "bbox": [
+    74.555,
+    31.585,
+    74.595,
+    31.625
+  ],
+  "epsg": 32643,
+  "utm": [
+    457770,
+    3494500,
+    461600,
+    3498960
+  ],
+  "pixel_m": 10,
+  "source": "Copernicus Sentinel-2 L2A via Element84 Earth Search (AWS open data)",
+  "before_date": "2025-09-23",
+  "after_date": "2025-11-12",
+  "before_scene": "S2B_43SDR_20250923_0_L2A",
+  "after_scene": "S2B_43SDR_20251112_0_L2A",
+  "before_cloud": 0.0,
+  "after_cloud": 0.0,
+  "note": "Farmland by the Attari crossing during the paddy harvest. Most fields are flagged as vegetation cleared: that is the season, not intruders. It shows why pairs should be a week or two apart."
+}

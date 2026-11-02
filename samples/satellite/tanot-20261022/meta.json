@@ -1,0 +1,26 @@
+{
+  "id": "tanot-20261022",
+  "name": "Tanot, Jaisalmer Tehsil, Jaisalmer, Rajasthan, India",
+  "note": "Searched by place: Tanot, Jaisalmer Tehsil, Jaisalmer, Rajasthan, India.",
+  "bbox": [
+    70.32777,
+    27.7734,
+    70.37854,
+    27.81862
+  ],
+  "epsg": 32642,
+  "utm": [
+    630770,
+    3072800,
+    635840,
+    3077880
+  ],
+  "pixel_m": 10,
+  "source": "Copernicus Sentinel-2 L2A via Element84 Earth Search (AWS open data)",
+  "before_date": "2026-09-09",
+  "after_date": "2026-10-09",
+  "before_scene": "S2C_42RXR_20260909_0_L2A",
+  "after_scene": "S2C_42RXR_20261009_1_L2A",
+  "before_cloud": 0.0,
+  "after_cloud": 0.0
+}

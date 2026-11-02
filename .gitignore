@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Android build output and local SDK configuration
+siren-app/android/build/
+siren-app/android/app/build/
+siren-app/android/.gradle/
+siren-app/android/local.properties
+siren-app/android/.idea/
+*.iml
+dist/
+
+# Runtime data and generated evidence
+jobs/
+outputs/
+zones/
+data/
+uploads/
+references/
+models/
+
+# Local certificates, secrets, and environment configuration
+certs/
+.env
+.env.*
+!.env.example
+
+# Local tools and editor / OS state
+pylibs/
+.claude/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,26 @@
+{
+  "id": "khavda",
+  "name": "Khavda, Rann of Kutch (Gujarat border)",
+  "bbox": [
+    69.5,
+    23.99,
+    69.58,
+    24.035
+  ],
+  "epsg": 32642,
+  "utm": [
+    550840,
+    2653200,
+    559000,
+    2658230
+  ],
+  "pixel_m": 10,
+  "source": "Copernicus Sentinel-2 L2A via Element84 Earth Search (AWS open data)",
+  "before_date": "2025-10-13",
+  "after_date": "2025-11-15",
+  "before_scene": "S2A_42QWM_20251013_0_L2A",
+  "after_scene": "S2B_42QWM_20251115_0_L2A",
+  "before_cloud": 0.0077,
+  "after_cloud": 0.0,
+  "note": "Desert next to the Khavda renewable energy park. Expect new panel blocks, new roads and some drifting sand."
+}

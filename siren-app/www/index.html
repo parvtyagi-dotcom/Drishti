@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Drishti Siren</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; min-height: 100vh; background: #0a0f16; color: #e6edf3;
+    font-family: system-ui, -apple-system, Roboto, sans-serif;
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top, 0px) 16px env(safe-area-inset-bottom, 0px);
+  }
+  header { display: flex; align-items: center; justify-content: space-between;
+           gap: 12px; padding: 16px 0 12px; border-bottom: 1px solid #1e2a38; }
+  .brand { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: #8aa0b6; }
+  .conn { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #8aa0b6; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #55606c; }
+  .dot.up { background: #31c48d; box-shadow: 0 0 10px #31c48d; }
+  .dot.err { background: #f05252; }
+
+  main { flex: 1; display: flex; flex-direction: column; align-items: center;
+         justify-content: center; text-align: center; gap: 20px; padding: 24px 0; }
+  .state { font-size: 13px; letter-spacing: .2em; text-transform: uppercase; color: #8aa0b6; }
+  .headline { font-size: clamp(30px, 9vw, 52px); font-weight: 800; line-height: 1.05; margin: 0; }
+  .sub { font-size: clamp(14px, 4vw, 18px); color: #b6c6d6; max-width: 620px; margin: 0; line-height: 1.45; }
+  .meta { font-size: 12px; color: #7c8b9a; }
+
+  button { font: inherit; font-weight: 700; border: 0; border-radius: 14px;
+           padding: 18px 30px; font-size: 18px; cursor: pointer; min-width: 240px; }
+  .primary { background: #1f6feb; color: #fff; }
+  .ghost { background: #30363d; color: #e6edf3; }
+  .link { background: none; color: #8aa0b6; font-size: 13px; padding: 10px; min-width: 0;
+          text-decoration: underline; font-weight: 500; }
+
+  input { font: inherit; width: 100%; padding: 14px; border-radius: 10px; font-size: 16px;
+          background: #111a24; color: #e6edf3; border: 1px solid #1e2a38; text-align: center; }
+  .field { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 10px; }
+  label { font-size: 12px; color: #8aa0b6; text-align: left; }
+
+  body.alarm { background: #2b0b0b; animation: flash .7s steps(1) infinite; }
+  @keyframes flash { 50% { background: #7f1d1d; } }
+  body.alarm .headline { color: #fff; }
+  .badge { display: inline-block; padding: 5px 12px; border-radius: 999px;
+           font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+  .badge.CRITICAL { background: #b91c1c; color: #fff; }
+  .badge.HIGH { background: #c2410c; color: #fff; }
+
+  .log { border-top: 1px solid #1e2a38; padding: 12px 0 16px; max-height: 30vh; overflow-y: auto; }
+  .log h2 { font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+            color: #7c8b9a; margin: 0 0 10px; font-weight: 600; }
+  .row { display: flex; gap: 10px; align-items: baseline; padding: 7px 0;
+         border-bottom: 1px solid #141d28; font-size: 13px; }
+  .row:last-child { border-bottom: 0; }
+  .row time { color: #7c8b9a; font-variant-numeric: tabular-nums; flex: none; }
+  .row .cam { color: #7c8b9a; flex: none; margin-left: auto; }
+  .empty { color: #7c8b9a; font-size: 13px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="brand">Drishti &middot; Post Siren</span>
+    <span class="conn"><span class="dot" id="dot"></span><span id="conn">not connected</span></span>
+  </header>
+
+  <main>
+    <!-- Setup: asked once, then remembered. The address is entered rather than
+         compiled in, so a server whose IP changes does not need a new build. -->
+    <div id="setup" class="field" hidden>
+      <div class="state">Connect to Drishti</div>
+      <label for="host">Server address shown on the dashboard's Connect Device page</label>
+      <input id="host" inputmode="url" autocapitalize="off" autocorrect="off"
+             placeholder="192.168.0.166:8000">
+      <button class="primary" id="saveHost">Connect</button>
+      <div class="meta" id="setupHint">Both devices must be on the same network.</div>
+    </div>
+
+    <div id="runtime" hidden>
+      <div class="state" id="state">Siren disarmed</div>
+      <h1 class="headline" id="headline">Tap to arm</h1>
+      <p class="sub" id="sub">This phone will sound whenever Drishti raises a high-priority alert.</p>
+      <div id="badgeWrap"></div>
+      <div style="height:14px"></div>
+      <button class="primary" id="armBtn">Arm siren</button>
+      <div class="meta" id="meta"></div>
+      <div class="meta" id="diag"></div>
+      <div style="height:6px"></div>
+      <!-- Lets the operator confirm this phone can actually make a noise -
+           volume up, silent mode off, audio unlocked - without waiting for a
+           real incident to find out that it cannot. -->
+      <button class="link" id="testBtn">Test siren sound</button>
+      <button class="link" id="changeHost">Change server</button>
+    </div>
+  </main>
+
+  <section class="log" id="logSection" hidden>
+    <h2>Recent alerts</h2>
+    <div id="log"><div class="empty">No alerts yet.</div></div>
+  </section>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const ALARM_SECONDS = 15;
+  const STORE_KEY = "borderwatch.server";
+
+  let audio = null, armed = false, alarmTimer = null, osc = null, gain = null;
+  let ws = null, retry = null, backfilling = true, server = null;
+  const alerts = [];
+
+  function read(key) { try { return localStorage.getItem(key); } catch (_) { return null; } }
+  function write(key, value) { try { localStorage.setItem(key, value); } catch (_) {} }
+
+  // --- alarm tone ----------------------------------------------------------
+  function startTone() {
+    if (!audio || osc) return;
+    osc = audio.createOscillator();
+    gain = audio.createGain();
+    osc.type = "sawtooth";
+    gain.gain.setValueAtTime(0.0001, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(1.0, audio.currentTime + 0.05);
+    osc.connect(gain).connect(audio.destination);
+    const t0 = audio.currentTime, step = 0.6;
+    osc.frequency.setValueAtTime(600, t0);
+    for (let i = 0; i < Math.ceil(ALARM_SECONDS / step) + 2; i++) {
+      osc.frequency.linearRampToValueAtTime(i % 2 ? 600 : 1150, t0 + (i + 1) * step);
+    }
+    osc.start();
+  }
+
+  function stopTone() {
+    if (!osc) return;
+    try {
+      gain.gain.cancelScheduledValues(audio.currentTime);
+      gain.gain.setValueAtTime(gain.gain.value, audio.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.12);
+      osc.stop(audio.currentTime + 0.15);
+    } catch (_) {}
+    osc = null; gain = null;
+  }
+
+  // --- alarm state ---------------------------------------------------------
+  function raiseAlarm(ev) {
+    document.body.classList.add("alarm");
+    $("state").textContent = ev.camera_name ? "Alert · " + ev.camera_name : "Alert";
+    $("headline").textContent = (ev.type || "ALERT").replace(/_/g, " ");
+    $("sub").textContent = ev.reason || "";
+    $("badgeWrap").innerHTML = '<span class="badge ' + (ev.severity || "HIGH") + '">'
+      + (ev.severity || "HIGH") + "</span>";
+    $("armBtn").textContent = "Silence";
+    $("armBtn").className = "ghost";
+    startTone();
+    if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 900]);
+    clearTimeout(alarmTimer);
+    alarmTimer = setTimeout(clearAlarm, ALARM_SECONDS * 1000);
+  }
+
+  function clearAlarm() {
+    clearTimeout(alarmTimer);
+    stopTone();
+    document.body.classList.remove("alarm");
+    $("badgeWrap").innerHTML = "";
+    $("armBtn").textContent = armed ? "Disarm" : "Arm siren";
+    $("armBtn").className = armed ? "ghost" : "primary";
+    idleText();
+  }
+
+  function idleText() {
+    if (!armed) return;
+    $("state").textContent = "Siren armed";
+    $("headline").textContent = "Monitoring";
+    $("sub").textContent = "This phone will sound on any high-priority alert.";
+  }
+
+  async function arm() {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.state === "suspended") await audio.resume();
+    armed = true;
+    write("borderwatch.armed", "1");
+    $("armBtn").textContent = "Disarm";
+    $("armBtn").className = "ghost";
+    idleText();
+  }
+
+  function disarm() {
+    armed = false;
+    write("borderwatch.armed", "0");
+    clearAlarm();
+    $("state").textContent = "Siren disarmed";
+    $("headline").textContent = "Tap to arm";
+    $("sub").textContent = "Alerts are still logged below, but this phone stays silent.";
+    $("armBtn").textContent = "Arm siren";
+    $("armBtn").className = "primary";
+  }
+
+  $("armBtn").addEventListener("click", () => {
+    if (document.body.classList.contains("alarm")) { clearAlarm(); return; }
+    armed ? disarm() : arm();
+  });
+
+  // --- alert log -----------------------------------------------------------
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function logAlert(ev) {
+    alerts.unshift(ev);
+    alerts.splice(25);
+    $("logSection").hidden = false;
+    $("log").innerHTML = alerts.map((a) => {
+      const t = new Date((a.wall_time || Date.now() / 1000) * 1000)
+        .toLocaleTimeString([], { hour12: false });
+      return '<div class="row"><time>' + t + "</time><span>"
+        + escapeHtml(a.reason || a.type) + '</span><span class="cam">'
+        + escapeHtml(a.camera_name || "") + "</span></div>";
+    }).join("");
+    $("meta").textContent = alerts.length + " alert" + (alerts.length === 1 ? "" : "s") + " this session";
+  }
+
+  // --- connection ----------------------------------------------------------
+  function setConn(text, cls) {
+    $("conn").textContent = text;
+    $("dot").className = "dot" + (cls ? " " + cls : "");
+  }
+
+  function normalise(input) {
+    let value = String(input || "").trim().replace(/\/+$/, "");
+    value = value.replace(/^https?:\/\//i, "");
+    if (!value) return null;
+    // Default to the plain-HTTP port: a self-signed certificate cannot be
+    // accepted from inside a native app the way a browser lets you accept it,
+    // so the app talks to the unencrypted port on the local network.
+    if (!/:\d+$/.test(value)) value += ":8000";
+    return value;
+  }
+
+  let attempts = 0;
+
+  function diag(message) { $("diag").textContent = message || ""; }
+
+  function connect() {
+    if (!server) return;
+    clearTimeout(retry);
+    attempts += 1;
+    setConn("connecting");
+
+    // Confirm the server is actually reachable before blaming the websocket.
+    // A failed websocket reports nothing useful to JavaScript, so without
+    // this the app can only ever say "reconnecting" - which is exactly the
+    // dead end that made this hard to diagnose.
+    fetch("http://" + server + "/api/live/connect-info", { method: "GET" })
+      .then(() => diag(""))
+      .catch(() => {
+        if (attempts > 1) {
+          diag("Cannot reach " + server + ". Check both devices are on the "
+             + "same WiFi and that the server is running.");
+        }
+      });
+
+    const url = "ws://" + server + "/api/live/ws/events";
+    try {
+      ws = new WebSocket(url);
+    } catch (err) {
+      setConn("bad address", "err");
+      diag("Could not open " + url + " - " + (err && err.message ? err.message : err));
+      return;
+    }
+
+    ws.onopen = () => {
+      attempts = 0;
+      diag("");
+      setConn("connected", "up");
+      // The server replays recent events on connect so a late-joining device
+      // has context. Those are history - logging them is right, sounding the
+      // alarm for them is not.
+      backfilling = true;
+      setTimeout(() => { backfilling = false; }, 1500);
+    };
+
+    ws.onmessage = (msg) => {
+      let ev;
+      try { ev = JSON.parse(msg.data); } catch (_) { return; }
+      if (!ev.alarm) return;
+      logAlert(ev);
+      if (armed && !backfilling) raiseAlarm(ev);
+    };
+
+    const dropped = () => {
+      setConn("reconnecting", "err");
+      clearTimeout(retry);
+      retry = setTimeout(connect, 3000);  // a post siren must heal itself
+    };
+    ws.onclose = dropped;
+    ws.onerror = () => { try { ws.close(); } catch (_) {} };
+  }
+
+  function showSetup() {
+    $("setup").hidden = false;
+    $("runtime").hidden = true;
+    $("host").value = server || "";
+  }
+
+  function showRuntime() {
+    $("setup").hidden = true;
+    $("runtime").hidden = false;
+    if (read("borderwatch.armed") === "1") {
+      // Remember the intent, but audio still needs one tap to unlock - so the
+      // screen says exactly that rather than pretending to be armed.
+      $("state").textContent = "Siren ready";
+      $("headline").textContent = "Tap to arm";
+      $("sub").textContent = "Armed last time. Tap once to enable sound on this device.";
+    }
+  }
+
+  $("saveHost").addEventListener("click", () => {
+    const value = normalise($("host").value);
+    if (!value) { $("setupHint").textContent = "Enter the address, for example 192.168.0.166:8000"; return; }
+    server = value;
+    write(STORE_KEY, server);
+    showRuntime();
+    connect();
+  });
+
+  $("testBtn").addEventListener("click", async () => {
+    // Arming and sounding share the same unlock, so testing also leaves the
+    // device ready - there is no way to pass the test and still be silent.
+    if (!armed) await arm();
+    raiseAlarm({
+      type: "SIREN TEST", severity: "HIGH", camera_name: "Test",
+      reason: "This is what a real alert sounds like on this phone.",
+    });
+  });
+
+  $("host").addEventListener("keydown", (e) => { if (e.key === "Enter") $("saveHost").click(); });
+  $("changeHost").addEventListener("click", () => { try { ws && ws.close(); } catch (_) {} showSetup(); });
+
+  server = read(STORE_KEY);
+  if (server) { showRuntime(); connect(); } else { showSetup(); }
+})();
+</script>
+</body>
+</html>

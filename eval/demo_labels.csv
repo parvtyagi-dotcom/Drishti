@@ -1,0 +1,14 @@
+# Ground truth for the demo clips in uploads/. Each fact below is one the
+# existing smoke scripts already check, so these labels are known to be true.
+# The ANPR clip carries an overlaid "TEST123" plate: good for checking the
+# pipeline works, not a real-world accuracy figure. Real numbers need the
+# team's own labelled campus footage; copy this file and add rows.
+clip,module,expected,start_sec,end_sec,reference,zone,lowlight,condition
+smoke_anpr_test123.mp4,anpr,TEST123,,,,,no,day
+smoke_anpr_test123_dark.mp4,anpr,TEST123,,,,,yes,night
+smoke_person_id.mp4,person_id,present,,,references/smoke_target,,no,day
+smoke_person_id.mp4,person_id,absent,,,references/smoke_unrelated/ref1.jpg,,no,day
+smoke_person_id_dark.mp4,person_id,present,,,references/smoke_target/ref1.jpg,,yes,night
+# Zone rows look like this once crossings are labelled from real footage:
+# campus_gate_01.mp4,zone,entry,12.0,14.5,,zones/<zone-id>.json,no,day
+# campus_gate_02.mp4,zone,none,,,,zones/<zone-id>.json,no,night

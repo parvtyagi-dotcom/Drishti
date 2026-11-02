@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Drishti Phone Camera</title>
+<meta name="theme-color" content="#0a0f16">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; min-height: 100vh; background: #0a0f16; color: #e6edf3;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top, 0px) 16px env(safe-area-inset-bottom, 0px);
+  }
+  header { display: flex; align-items: center; justify-content: space-between;
+           gap: 12px; padding: 16px 0 12px; border-bottom: 1px solid #1e2a38; }
+  .brand { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: #8aa0b6; }
+  .conn { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #8aa0b6; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #55606c; }
+  .dot.up { background: #31c48d; box-shadow: 0 0 10px #31c48d; }
+  .dot.err { background: #f05252; }
+
+  main { flex: 1; display: flex; flex-direction: column; gap: 16px; padding: 18px 0; }
+  .frame { position: relative; border-radius: 12px; overflow: hidden; background: #000;
+           border: 1px solid #1e2a38; aspect-ratio: 3 / 4; }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .tag { position: absolute; left: 10px; top: 10px; display: flex; align-items: center; gap: 6px;
+         background: rgba(0,0,0,.65); padding: 5px 9px; border-radius: 6px;
+         font-size: 11px; font-weight: 700; letter-spacing: .06em; }
+  .tag .live { width: 8px; height: 8px; border-radius: 50%; background: #f05252; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  h1 { font-size: 20px; margin: 0; }
+  p { margin: 0; font-size: 13.5px; line-height: 1.5; color: #b6c6d6; }
+  .muted { color: #7c8b9a; font-size: 12px; }
+
+  button { font: inherit; font-weight: 700; border: 0; border-radius: 12px;
+           padding: 16px 24px; font-size: 17px; width: 100%; cursor: pointer; }
+  .go { background: #1f6feb; color: #fff; }
+  .stop { background: #30363d; color: #e6edf3; }
+  select { font: inherit; width: 100%; padding: 12px; border-radius: 10px;
+           background: #111a24; color: #e6edf3; border: 1px solid #1e2a38; }
+
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .stat { background: #111a24; border: 1px solid #1e2a38; border-radius: 10px;
+          padding: 10px; text-align: center; }
+  .stat b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 10.5px; color: #7c8b9a; }
+
+  .warn { background: #3b1d1d; border: 1px solid #7f1d1d; color: #ffc9c9;
+          border-radius: 10px; padding: 12px; font-size: 13px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="brand">Drishti &middot; Phone Camera</span>
+    <span class="conn"><span class="dot" id="dot"></span><span id="conn">idle</span></span>
+  </header>
+
+  <main>
+    <div id="insecure" class="warn" hidden>
+      This page needs a secure connection before the browser will allow camera access.
+      Open it over <b>https://</b>, or use an IP-camera app instead and add its URL as a
+      camera from the dashboard.
+    </div>
+
+    <div class="frame">
+      <video id="preview" playsinline autoplay muted></video>
+      <div class="tag" id="tag" hidden><span class="live"></span> STREAMING</div>
+    </div>
+
+    <select id="facing">
+      <option value="environment">Rear camera</option>
+      <option value="user">Front camera</option>
+    </select>
+
+    <button class="go" id="btn">Start streaming</button>
+
+    <div class="stats">
+      <div class="stat"><b id="sFps">0.0</b><span>fps sent</span></div>
+      <div class="stat"><b id="sFrames">0</b><span>frames</span></div>
+      <div class="stat"><b id="sKb">0</b><span>KB/s</span></div>
+    </div>
+
+    <p class="muted" id="hint">
+      This phone becomes a camera on the Drishti dashboard. Keep this screen on while streaming.
+    </p>
+  </main>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  const cameraId = params.get("camera_id");
+
+  // Capture rate: matches the backend's analytics rate. Sending faster would
+  // only burn phone battery and WiFi on frames the analysis will drop anyway.
+  const SEND_FPS = 10;
+  const JPEG_QUALITY = 0.65;
+  const MAX_WIDTH = 960;
+
+  let stream = null, ws = null, timer = null, wakeLock = null;
+  let frames = 0, bytes = 0, lastTick = 0, streaming = false;
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d", { alpha: false });
+
+  if (!window.isSecureContext) $("insecure").hidden = false;
+  if (!cameraId) {
+    $("hint").textContent = "No camera id in the link. Open this page from the dashboard's phone-camera button.";
+    $("btn").disabled = true;
+  }
+
+  function setConn(text, cls) {
+    $("conn").textContent = text;
+    $("dot").className = "dot" + (cls ? " " + cls : "");
+  }
+
+  async function startCamera() {
+    const facingMode = $("facing").value;
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+    $("preview").srcObject = stream;
+    await $("preview").play().catch(() => {});
+  }
+
+  function openSocket() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${proto}//${location.host}/api/live/ws/ingest/${encodeURIComponent(cameraId)}`);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => setConn("streaming", "up");
+    ws.onclose = (e) => {
+      setConn(e.code === 4404 ? "camera not found" : "disconnected", "err");
+      if (streaming && e.code !== 4404 && e.code !== 4400) setTimeout(() => { if (streaming) openSocket(); }, 2000);
+    };
+    ws.onerror = () => setConn("connection error", "err");
+  }
+
+  function sendFrame() {
+    const video = $("preview");
+    if (!ws || ws.readyState !== WebSocket.OPEN || !video.videoWidth) return;
+    // Back-pressure: if the socket is still flushing, skip this frame rather
+    // than queueing. On a live feed the newest frame is the only one worth
+    // sending, and a growing buffer would add latency that never recovers.
+    if (ws.bufferedAmount > 512 * 1024) return;
+
+    const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob((blob) => {
+      if (!blob || !ws || ws.readyState !== WebSocket.OPEN) return;
+      blob.arrayBuffer().then((buf) => {
+        try { ws.send(buf); } catch (_) { return; }
+        frames += 1; bytes += buf.byteLength;
+      });
+    }, "image/jpeg", JPEG_QUALITY);
+  }
+
+  function tickStats() {
+    const now = performance.now();
+    if (!lastTick) { lastTick = now; return; }
+    const dt = (now - lastTick) / 1000;
+    if (dt >= 1) {
+      $("sFps").textContent = (frames / dt).toFixed(1);
+      $("sKb").textContent = Math.round(bytes / 1024 / dt);
+      $("sFrames").textContent = String(Number($("sFrames").textContent) + frames);
+      frames = 0; bytes = 0; lastTick = now;
+    }
+  }
+
+  async function start() {
+    try {
+      setConn("starting camera");
+      await startCamera();
+      openSocket();
+      streaming = true;
+      timer = setInterval(() => { sendFrame(); tickStats(); }, 1000 / SEND_FPS);
+      $("btn").textContent = "Stop streaming";
+      $("btn").className = "stop";
+      $("tag").hidden = false;
+      try { wakeLock = await navigator.wakeLock.request("screen"); } catch (_) {}
+    } catch (err) {
+      setConn("camera blocked", "err");
+      $("hint").textContent =
+        "Could not open the camera: " + (err && err.message ? err.message : err) +
+        ". On a LAN address the browser requires https for camera access.";
+      stop();
+    }
+  }
+
+  function stop() {
+    streaming = false;
+    clearInterval(timer); timer = null;
+    if (ws) { ws.close(); ws = null; }
+    if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+    $("btn").textContent = "Start streaming";
+    $("btn").className = "go";
+    $("tag").hidden = true;
+    setConn("idle");
+  }
+
+  $("btn").addEventListener("click", () => (streaming ? stop() : start()));
+  $("facing").addEventListener("change", () => { if (streaming) { stop(); start(); } });
+  window.addEventListener("pagehide", stop);
+})();
+</script>
+</body>
+</html>

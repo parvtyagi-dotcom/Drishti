@@ -1,0 +1,17 @@
+{
+  "name": "Border-Watch Post Siren",
+  "short_name": "BW Siren",
+  "description": "Sounds an alarm at the post when Border-Watch raises a high-priority alert.",
+  "start_url": "/api/live/siren",
+  "scope": "/api/live/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0f16",
+  "theme_color": "#0a0f16",
+  "categories": ["utilities", "security"],
+  "icons": [
+    { "src": "/api/live/siren/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/api/live/siren/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/api/live/siren/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

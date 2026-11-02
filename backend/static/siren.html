@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Drishti Siren</title>
+<link rel="manifest" href="/api/live/siren/manifest.webmanifest">
+<meta name="theme-color" content="#0a0f16">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="BW Siren">
+<link rel="apple-touch-icon" href="/api/live/siren/icon-192.png">
+<link rel="icon" type="image/png" href="/api/live/siren/icon-192.png">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; min-height: 100vh; background: #0a0f16; color: #e6edf3;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top, 0px) 16px env(safe-area-inset-bottom, 0px);
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 16px 0 12px; border-bottom: 1px solid #1e2a38;
+  }
+  .brand { font-size: 14px; letter-spacing: .14em; text-transform: uppercase; color: #8aa0b6; }
+  .link { font-size: 12px; color: #8aa0b6; text-decoration: none; border: 1px solid #1e2a38;
+          padding: 6px 10px; border-radius: 6px; }
+  .conn { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #8aa0b6; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #55606c; }
+  .dot.up { background: #31c48d; box-shadow: 0 0 10px #31c48d; }
+
+  main { flex: 1; display: flex; flex-direction: column; align-items: center;
+         justify-content: center; text-align: center; gap: 22px; padding: 28px 0; }
+
+  .state { font-size: 13px; letter-spacing: .2em; text-transform: uppercase; color: #8aa0b6; }
+  .headline { font-size: clamp(30px, 9vw, 54px); font-weight: 800; line-height: 1.05; margin: 0; }
+  .sub { font-size: clamp(15px, 4.2vw, 19px); color: #b6c6d6; max-width: 620px; margin: 0; line-height: 1.45; }
+  .meta { font-size: 13px; color: #7c8b9a; }
+
+  button {
+    font: inherit; font-weight: 700; border: 0; border-radius: 14px;
+    padding: 20px 34px; font-size: 19px; cursor: pointer; min-width: 240px;
+  }
+  .arm { background: #1f6feb; color: #fff; }
+  .silence { background: #30363d; color: #e6edf3; }
+  .link { background: none; color: #8aa0b6; font-size: 13px; padding: 10px;
+          min-width: 0; text-decoration: underline; font-weight: 500; }
+
+  /* Alarm state: the whole page becomes the indicator, so it reads across a
+     room from a phone lying on a table. */
+  body.alarm { background: #2b0b0b; animation: flash .7s steps(1) infinite; }
+  @keyframes flash { 50% { background: #7f1d1d; } }
+  body.alarm .headline { color: #fff; }
+  body.alarm .state { color: #ffb4b4; }
+
+  .badge { display: inline-block; padding: 5px 12px; border-radius: 999px;
+           font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+  .badge.CRITICAL { background: #b91c1c; color: #fff; }
+  .badge.HIGH { background: #c2410c; color: #fff; }
+
+  .log { border-top: 1px solid #1e2a38; padding: 12px 0 18px; max-height: 32vh; overflow-y: auto; }
+  .log h2 { font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+            color: #7c8b9a; margin: 0 0 10px; font-weight: 600; }
+  .row { display: flex; gap: 10px; align-items: baseline; padding: 7px 0;
+         border-bottom: 1px solid #141d28; font-size: 13px; }
+  .row:last-child { border-bottom: 0; }
+  .row time { color: #7c8b9a; font-variant-numeric: tabular-nums; flex: none; }
+  .row .what { color: #cdd9e5; }
+  .row .cam { color: #7c8b9a; flex: none; margin-left: auto; }
+  .empty { color: #7c8b9a; font-size: 13px; }
+  .voice { display: inline-flex; gap: 8px; align-items: center; color: #7c8b9a; font-size: 13px; margin-top: 10px; }
+  .voice select { background: #0f1722; color: #cdd9e5; border: 1px solid #1e2a38; border-radius: 6px; padding: 4px 6px; font: inherit; }
+  /* The picture and brief stay readable over the flashing background. */
+  .evidence { display: none; width: 100%; max-width: 560px; background: #0a0f16; border-radius: 12px;
+              border: 1px solid #1e2a38; overflow: hidden; text-align: left; }
+  .evidence.show { display: block; }
+  .evidence img { display: none; width: 100%; max-height: 38vh; object-fit: contain; background: #000; }
+  .evidence img.show { display: block; }
+  .brief { padding: 10px 12px; font-size: 14px; line-height: 1.45; color: #cdd9e5; white-space: pre-line; }
+  .brief .who { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #7c8b9a; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="brand">Drishti &middot; Post Siren</span>
+    <span class="conn"><span class="dot" id="dot"></span><span id="conn">connecting</span></span>
+  </header>
+
+  <main>
+    <div class="state" id="state">Siren disarmed</div>
+    <h1 class="headline" id="headline">Tap to arm</h1>
+    <p class="sub" id="sub">Browsers only allow sound after a tap. Arm once and this device will
+       sound automatically on every high-priority alert.</p>
+    <div id="badgeWrap"></div>
+    <div class="evidence" id="evidence">
+      <img id="snap" alt="Camera picture at the moment of the alarm">
+      <div class="brief" id="brief"></div>
+    </div>
+    <button class="arm" id="armBtn">Arm siren</button>
+    <div class="meta" id="meta"></div>
+    <!-- Confirms this device can actually make a noise - volume up, not on
+         silent, audio unlocked - rather than discovering it cannot during a
+         real incident. -->
+    <button class="link" id="testBtn">Test siren sound</button>
+    <label class="voice" for="voiceSel">Spoken alerts
+      <select id="voiceSel">
+        <option value="hi">हिंदी</option>
+        <option value="en">English</option>
+        <option value="off">Off</option>
+      </select>
+    </label>
+    <div class="meta" id="voiceNote"></div>
+  </main>
+
+  <section class="log">
+    <h2>Recent alerts</h2>
+    <div id="log"><div class="empty">No alerts yet.</div></div>
+  </section>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const ALARM_SECONDS = 12;
+
+  let audio = null, armed = false, alarmTimer = null, osc = null, gain = null, wakeLock = null;
+  const alerts = [];
+
+  // --- siren tone -----------------------------------------------------------
+  // Synthesised rather than loaded from an audio file: no asset to ship, no
+  // download to fail, and it stays loud and recognisable on a phone speaker.
+  function startTone() {
+    if (!audio || osc) return;
+    osc = audio.createOscillator();
+    gain = audio.createGain();
+    osc.type = "sawtooth";
+    gain.gain.setValueAtTime(0.0001, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.9, audio.currentTime + 0.05);
+    osc.connect(gain).connect(audio.destination);
+
+    // Two-tone sweep, scheduled ahead so it keeps wailing without JS timers.
+    const t0 = audio.currentTime, step = 0.6;
+    osc.frequency.setValueAtTime(600, t0);
+    for (let i = 0; i < Math.ceil(ALARM_SECONDS / step) + 2; i++) {
+      const t = t0 + i * step;
+      osc.frequency.linearRampToValueAtTime(i % 2 ? 600 : 1100, t + step);
+    }
+    osc.start();
+  }
+
+  // A camera going off is a fault, not an intrusion: three short falling beeps.
+  function offlineBeeps() {
+    if (!audio) return;
+    [880, 660, 440].forEach((hz, i) => {
+      const at = audio.currentTime + i * 0.18;
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.type = "square";
+      o.frequency.setValueAtTime(hz, at);
+      o.connect(g).connect(audio.destination);
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(0.6, at + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.14);
+      o.start(at); o.stop(at + 0.15);
+    });
+  }
+
+  function stopTone() {
+    if (!osc) return;
+    try {
+      gain.gain.cancelScheduledValues(audio.currentTime);
+      gain.gain.setValueAtTime(gain.gain.value, audio.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.12);
+      osc.stop(audio.currentTime + 0.15);
+    } catch (_) { /* already stopped */ }
+    osc = null; gain = null;
+  }
+
+  // --- spoken alerts --------------------------------------------------------
+  // A siren says something is wrong; a voice says what and where, so the
+  // guard knows which way to run without walking to a screen. Uses the
+  // device's built-in voices, so it works with no internet.
+  const SAY = {
+    hi: {
+      ZONE_ENTRY: "{cam} पर प्रतिबंधित क्षेत्र में घुसपैठ",
+      TARGET_ZONE_INTRUSION: "{cam} पर निगरानी सूची का व्यक्ति प्रतिबंधित क्षेत्र में",
+      TARGET_CONFIRMED: "{cam} पर निगरानी सूची का व्यक्ति पहचाना गया",
+      TARGET_REACQUIRED: "{cam} पर निगरानी सूची का व्यक्ति फिर दिखा",
+      TARGET_CROSS_CAMERA_MATCH: "{cam} पर निगरानी सूची का व्यक्ति दिखा",
+      TARGET_VEHICLE_FOUND: "{cam} पर संदिग्ध वाहन दिखा",
+      TARGET_VEHICLE_REACQUIRED: "{cam} पर संदिग्ध वाहन फिर दिखा",
+      TARGET_BEHAVIOR_ALERT: "{cam} पर संदिग्ध गतिविधि",
+      CAMERA_OFFLINE: "{cam} बंद हो गया",
+      CAMERA_TAMPERED: "{cam} से छेड़छाड़ की आशंका",
+      CAMERA_SABOTAGE_SUSPECTED: "{cam} बंद हुआ, तोड़फोड़ की आशंका",
+      SENSOR_ALARM_CONFIRMED: "{sensor} पर घुसपैठ, कैमरे ने पुष्टि की",
+      SENSOR_ALARM_UNVERIFIED: "{sensor} सेंसर बजा, कैमरा जांच नहीं कर सका",
+      DRONE_SUSPECTED: "{sensor} पर ड्रोन की आवाज़, ऊपर देखें",
+      DIGGING_SUSPECTED: "{sensor} पर खुदाई के कंपन, सुरंग की आशंका",
+      "SIREN TEST": "सायरन परीक्षण",
+      _default: "{cam} पर अलर्ट",
+    },
+    en: {
+      ZONE_ENTRY: "Intrusion into the restricted zone at {cam}",
+      TARGET_ZONE_INTRUSION: "Watched person inside the restricted zone at {cam}",
+      TARGET_CONFIRMED: "Watched person identified at {cam}",
+      TARGET_REACQUIRED: "Watched person seen again at {cam}",
+      TARGET_CROSS_CAMERA_MATCH: "Watched person seen at {cam}",
+      TARGET_VEHICLE_FOUND: "Watched vehicle at {cam}",
+      TARGET_VEHICLE_REACQUIRED: "Watched vehicle seen again at {cam}",
+      TARGET_BEHAVIOR_ALERT: "Suspicious behaviour at {cam}",
+      CAMERA_OFFLINE: "{cam} has gone offline",
+      CAMERA_TAMPERED: "Possible tampering with {cam}",
+      CAMERA_SABOTAGE_SUSPECTED: "{cam} went offline. Possible sabotage",
+      SENSOR_ALARM_CONFIRMED: "Intrusion at {sensor}, confirmed on camera",
+      SENSOR_ALARM_UNVERIFIED: "{sensor} tripped. The camera could not check",
+      DRONE_SUSPECTED: "Possible drone near {sensor}. Look up",
+      DIGGING_SUSPECTED: "Digging vibration at {sensor}. Possible tunnel",
+      "SIREN TEST": "Siren test",
+      _default: "Alert at {cam}",
+    },
+  };
+  const VOICE_KEY = "drishti-siren-voice";
+  let voiceLang = "hi";
+  try { voiceLang = localStorage.getItem(VOICE_KEY) || "hi"; } catch (_) { /* storage blocked */ }
+  $("voiceSel").value = voiceLang;
+  $("voiceSel").addEventListener("change", (e) => {
+    voiceLang = e.target.value;
+    try { localStorage.setItem(VOICE_KEY, voiceLang); } catch (_) { /* storage blocked */ }
+    describeVoice();
+  });
+
+  function pickVoice(lang) {
+    if (!("speechSynthesis" in window)) return null;
+    const voices = speechSynthesis.getVoices();
+    return voices.find((v) => v.lang && v.lang.toLowerCase().startsWith(lang)) || null;
+  }
+
+  // Which language will actually be heard. A device without a Hindi voice
+  // would otherwise read Hindi text badly or not at all, so it says English.
+  function spokenLang() {
+    if (voiceLang === "off" || !("speechSynthesis" in window)) return null;
+    if (voiceLang === "hi" && !pickVoice("hi")) return "en";
+    return voiceLang;
+  }
+
+  function describeVoice() {
+    if (!("speechSynthesis" in window)) { $("voiceNote").textContent = "This browser cannot speak alerts."; return; }
+    if (voiceLang === "hi" && !pickVoice("hi")) {
+      $("voiceNote").textContent = "No Hindi voice on this device, so alerts are spoken in English. Add Hindi in the phone's text-to-speech settings.";
+    } else {
+      $("voiceNote").textContent = "";
+    }
+  }
+  if ("speechSynthesis" in window) speechSynthesis.onvoiceschanged = describeVoice;
+  describeVoice();
+
+  function announce(ev) {
+    const lang = spokenLang();
+    if (!lang) return;
+    const phrases = SAY[lang];
+    const sensor = (ev.data && ev.data.sensor_name) || ev.camera_name || "";
+    const text = (phrases[ev.type] || phrases._default)
+      .replace("{cam}", ev.camera_name || "").replace("{sensor}", sensor);
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = lang === "hi" ? "hi-IN" : "en-IN";
+    const voice = pickVoice(lang);
+    if (voice) utter.voice = voice;
+    utter.rate = 0.95;
+    // Dip the siren while the words are spoken, then bring it back.
+    utter.onstart = () => { if (gain && audio) gain.gain.setTargetAtTime(0.12, audio.currentTime, 0.05); };
+    utter.onend = () => { if (gain && audio) gain.gain.setTargetAtTime(0.9, audio.currentTime, 0.1); };
+    speechSynthesis.cancel();
+    speechSynthesis.speak(utter);
+  }
+
+  // --- alarm state ----------------------------------------------------------
+  function raiseAlarm(ev) {
+    document.body.classList.add("alarm");
+    $("state").textContent = ev.camera_name ? "Alert · " + ev.camera_name : "Alert";
+    $("headline").textContent = (ev.type || "ALERT").replace(/_/g, " ");
+    $("sub").textContent = ev.reason || "";
+    $("badgeWrap").innerHTML = '<span class="badge ' + (ev.severity || "HIGH") + '">'
+      + (ev.severity || "HIGH") + "</span>";
+    $("armBtn").textContent = "Silence";
+    $("armBtn").className = "silence";
+
+    showEvidence(ev);
+    if (ev.type === "CAMERA_OFFLINE") offlineBeeps(); else startTone();
+    if (navigator.vibrate) navigator.vibrate([400, 180, 400, 180, 700]);
+    // Let the siren be heard first, then say what happened.
+    setTimeout(() => announce(ev), 1500);
+    clearTimeout(alarmTimer);
+    alarmTimer = setTimeout(clearAlarm, ALARM_SECONDS * 1000);
+  }
+
+  // The picture is written the moment the alarm fires; the AI brief follows a
+  // few seconds later, so it is asked for until it arrives or a minute passes.
+  let briefTimer = null;
+  function showEvidence(ev) {
+    clearTimeout(briefTimer);
+    const box = $("evidence"), img = $("snap"), brief = $("brief");
+    box.className = "evidence";
+    img.className = "";
+    brief.innerHTML = "";
+    if (!ev.event_id || ev.type === "SIREN TEST") return;
+    box.className = "evidence show";
+    const base = "/api/live/siren/alert/" + encodeURIComponent(ev.event_id);
+    if (ev.evidence_bundle) {
+      img.onload = () => { img.className = "show"; };
+      img.onerror = () => { img.className = ""; };
+      img.src = base + "/snapshot.jpg";
+    }
+    brief.innerHTML = '<div class="who">AI brief</div><span>Writing…</span>';
+    let tries = 0;
+    const poll = () => {
+      fetch(base + "/brief").then((r) => r.ok ? r.json() : { status: "gone" }).then((b) => {
+        const body = brief.querySelector("span");
+        if (!body) return;
+        if (b.status === "ready" || b.status === "template") {
+          brief.querySelector(".who").textContent = b.status === "ready" ? "AI brief" : "Brief (written from rules)";
+          body.textContent = b.text;
+        } else if (b.status === "pending" && ++tries < 15) {
+          briefTimer = setTimeout(poll, 4000);
+        } else {
+          brief.innerHTML = "";
+        }
+      }).catch(() => { if (++tries < 15) briefTimer = setTimeout(poll, 4000); });
+    };
+    poll();
+  }
+
+  function clearAlarm() {
+    // The picture and brief stay up after Silence: that is when the guard
+    // finally has a moment to look at them. The next alarm replaces them.
+    clearTimeout(alarmTimer);
+    stopTone();
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    document.body.classList.remove("alarm");
+    $("badgeWrap").innerHTML = "";
+    $("armBtn").textContent = "Disarm";
+    $("armBtn").className = "silence";
+    setIdleText();
+  }
+
+  function setIdleText() {
+    if (!armed) return;
+    $("state").textContent = "Siren armed";
+    $("headline").textContent = "Monitoring";
+    $("sub").textContent = "This device will sound on any high-priority alert from Drishti.";
+  }
+
+  async function arm() {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    // The tap that armed us is what unlocks audio; resume() must happen inside
+    // that gesture or every later sound is silently blocked.
+    if (audio.state === "suspended") await audio.resume();
+    // Speech is also unlocked by a tap on some phones; an empty utterance
+    // inside the arming tap does that without making a sound.
+    if ("speechSynthesis" in window) speechSynthesis.speak(new SpeechSynthesisUtterance(""));
+    armed = true;
+    $("armBtn").textContent = "Disarm";
+    $("armBtn").className = "silence";
+    setIdleText();
+    // Best-effort: keep a phone propped up at the post from sleeping.
+    try { wakeLock = await navigator.wakeLock.request("screen"); } catch (_) { /* unsupported */ }
+  }
+
+  function disarm() {
+    armed = false;
+    clearAlarm();
+    $("state").textContent = "Siren disarmed";
+    $("headline").textContent = "Tap to arm";
+    $("sub").textContent = "Alerts will still be logged below, but this device will stay silent.";
+    $("armBtn").textContent = "Arm siren";
+    $("armBtn").className = "arm";
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  }
+
+  $("testBtn").addEventListener("click", async () => {
+    // Arming and sounding share one unlock, so a successful test also
+    // leaves the device armed - it cannot pass and then stay silent.
+    if (!armed) await arm();
+    raiseAlarm({ type: "SIREN TEST", severity: "HIGH", camera_name: "Test",
+                 reason: "This is what a real alert sounds like on this device." });
+  });
+
+  $("armBtn").addEventListener("click", () => {
+    if (document.body.classList.contains("alarm")) { clearAlarm(); return; }
+    armed ? disarm() : arm();
+  });
+
+  // --- alert log ------------------------------------------------------------
+  function logAlert(ev) {
+    alerts.unshift(ev);
+    alerts.splice(25);
+    $("log").innerHTML = alerts.map((a) => {
+      const t = new Date((a.wall_time || Date.now() / 1000) * 1000)
+        .toLocaleTimeString([], { hour12: false });
+      return '<div class="row"><time>' + t + "</time>"
+        + '<span class="what">' + escapeHtml(a.reason || a.type) + "</span>"
+        + '<span class="cam">' + escapeHtml(a.camera_name || "") + "</span></div>";
+    }).join("");
+    $("meta").textContent = alerts.length + " alert" + (alerts.length === 1 ? "" : "s") + " this session";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (ch) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+  }
+
+  // --- event feed -----------------------------------------------------------
+  let backfilling = true;
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(proto + "//" + location.host + "/api/live/ws/events");
+
+    ws.onopen = () => {
+      $("dot").classList.add("up");
+      $("conn").textContent = "connected";
+      // The server replays recent events on connect so a late-joining device
+      // has context. Those are history, not things happening now, so they are
+      // logged but must never sound the siren.
+      backfilling = true;
+      setTimeout(() => { backfilling = false; }, 1500);
+    };
+
+    ws.onmessage = (msg) => {
+      let ev;
+      try { ev = JSON.parse(msg.data); } catch (_) { return; }
+      if (!ev.alarm) return;          // server decides what is siren-worthy
+      logAlert(ev);
+      if (armed && !backfilling) raiseAlarm(ev);
+    };
+
+    const drop = () => {
+      $("dot").classList.remove("up");
+      $("conn").textContent = "reconnecting";
+      setTimeout(connect, 2000);      // a post siren must heal itself
+    };
+    ws.onclose = drop;
+    ws.onerror = () => ws.close();
+  }
+
+  connect();
+
+  // Registering the worker is what lets the browser offer "Install app" /
+  // "Add to Home Screen". Failure is non-fatal - the siren works as an
+  // ordinary page either way.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/api/live/sw.js", { scope: "/api/live/" })
+      .catch(() => { /* http origin or unsupported browser; ignore */ });
+  }
+})();
+</script>
+</body>
+</html>

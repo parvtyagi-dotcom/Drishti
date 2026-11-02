@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 9 and later block unencrypted traffic by default, which silently
+  kills the websocket this app depends on: it connects to a Drishti
+  server on the local network over ws://, and without this the connection is
+  refused before it ever leaves the device. The symptom is an app that sits
+  on "reconnecting" forever with nothing in any log to explain it.
+
+  Cleartext is limited to private address ranges. A Drishti server lives
+  on the same LAN as the phone, so there is no reason to weaken transport
+  security for the public internet as well - traffic to any other host still
+  requires TLS.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Private IPv4 ranges (RFC 1918) plus loopback. -->
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">10.0.0.0/8</domain>
+        <domain includeSubdomains="true">172.16.0.0/12</domain>
+        <domain includeSubdomains="true">192.168.0.0/16</domain>
+        <!-- Common link-local / hotspot range used when a phone tethers. -->
+        <domain includeSubdomains="true">169.254.0.0/16</domain>
+    </domain-config>
+
+    <!-- A self-signed certificate on a local server cannot be verified, and a
+         native app offers no way for the operator to accept it the way a
+         browser does. The app therefore uses http on the LAN rather than
+         pretending to have a trusted certificate. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Drishti Siren</string>
+    <string name="title_activity_main">Drishti Siren</string>
+    <string name="package_name">in.borderwatch.siren</string>
+    <string name="custom_url_scheme">in.borderwatch.siren</string>
+</resources>
