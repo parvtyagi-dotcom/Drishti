@@ -28,6 +28,7 @@ GREEN = (60, 200, 60)
 ORANGE = (0, 140, 255)
 MAGENTA = (200, 0, 200)
 WHITE = (255, 255, 255)
+GREY = (150, 150, 150)
 
 
 def format_timestamp(seconds: float) -> str:
@@ -147,6 +148,38 @@ def draw_target_box(
     for i, line in enumerate(lines):
         baseline_y = top + line_h * (i + 1) - 6
         cv2.putText(image, line, (x1 + 3, baseline_y), font, scale, WHITE, weight, cv2.LINE_AA)
+
+
+def draw_thin_box(
+    image: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    color: tuple[int, int, int],
+    label: str | None = None,
+    thickness: int = 1,
+    label_below: bool = False,
+) -> None:
+    """A light, secondary box - a face, a candidate still gathering
+    evidence, an unconfirmed plate read - drawn in place with a small label
+    above it. Deliberately quieter than draw_target_box so the confirmed
+    target box stays the one thing that stands out.
+
+    label_below puts the label under the box instead: a face sits at the top
+    of its body box, so a label above the face lands on the body's own label."""
+    x1, y1, x2, y2 = (int(v) for v in bbox)
+    cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
+    if not label:
+        return
+    font, scale, weight = cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1
+    (tw, th), _ = cv2.getTextSize(label, font, scale, weight)
+    box_h = th + 6
+    above = y1 - box_h
+    below_fits = y2 + box_h <= image.shape[0]
+    if label_below and below_fits:
+        top = y2
+    else:
+        top = above if above >= 0 else y2
+    cv2.rectangle(image, (x1, top), (x1 + tw + 4, top + box_h), color, -1)
+    cv2.putText(image, label, (x1 + 2, top + box_h - 4), font, scale, (0, 0, 0), weight, cv2.LINE_AA)
 
 
 def draw_polygon(image: np.ndarray, points, color=YELLOW, thickness: int = 2, label: str | None = None) -> None:

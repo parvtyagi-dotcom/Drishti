@@ -13,6 +13,7 @@ export function TalkDownControls({ camera }: { camera: LiveCamera }) {
   const [auto, setAuto] = useState(true);
   const [note, setNote] = useState<string | null>(null);
   const [showLink, setShowLink] = useState(false);
+  const [speakerKey, setSpeakerKey] = useState("");
   const [base, setBase] = useState<string | null>(null);
   const [qr, setQr] = useState<string | null>(null);
 
@@ -34,12 +35,18 @@ export function TalkDownControls({ camera }: { camera: LiveCamera }) {
 
   useEffect(() => {
     if (!showLink) return;
-    api.get<{ base_url: string | null }>("/api/live/connect-info")
-      .then((info) => setBase(info.base_url ?? window.location.origin))
+    api.get<{ base_url: string | null; speaker_key?: string }>("/api/live/connect-info")
+      .then((info) => {
+        setBase(info?.base_url ?? window.location.origin);
+        setSpeakerKey(info?.speaker_key ?? "");
+      })
       .catch(() => setBase(window.location.origin));
   }, [showLink]);
 
-  const url = base ? `${base}/api/live/speaker?camera=${encodeURIComponent(camera.name)}` : null;
+  // The pairing key lets the speaker connect without signing in.
+  const url = base
+    ? `${base}/api/live/speaker?camera=${encodeURIComponent(camera.name)}${speakerKey ? `&key=${speakerKey}` : ""}`
+    : null;
   useEffect(() => {
     if (!url) return;
     void QRCode.toDataURL(url, { width: 300, margin: 1 }).then(setQr).catch(() => setQr(null));

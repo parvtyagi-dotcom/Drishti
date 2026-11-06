@@ -147,10 +147,13 @@ def place(req: Placement, site: str | None = None, _: User = CAN_EDIT) -> dict:
 
 
 @router.post("/image")
-async def upload_image(file: UploadFile, site: str | None = None, _: User = CAN_EDIT) -> dict:
+def upload_image(file: UploadFile, site: str | None = None, _: User = CAN_EDIT) -> dict:
+    # Sync on purpose: decoding, resizing and re-encoding a 15 MB picture (and
+    # waiting on _lock) ran on the event loop and froze every live feed while
+    # it did. FastAPI runs a plain handler on a worker thread.
     with _lock:
         sid, _s = _site(_load(), site)
-    data = await file.read(MAX_IMAGE_BYTES + 1)
+    data = file.file.read(MAX_IMAGE_BYTES + 1)
     if len(data) > MAX_IMAGE_BYTES:
         raise HTTPException(413, "the picture is larger than 15 MB; use a smaller export")
     # Decode and re-encode rather than storing the upload as-is: it must

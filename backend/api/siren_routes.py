@@ -3,7 +3,8 @@
     GET /api/live/siren/alert/{event_id}/snapshot.jpg
     GET /api/live/siren/alert/{event_id}/brief
 
-Public, like the siren page, because the phone cannot sign in. To keep that
+Reachable without a login, because the phone cannot sign in, but only with
+the siren's pairing key (see backend.api.device_auth). To keep that
 narrow, only alarm events from the last 15 minutes are served, looked up by
 their random event id, and only the snapshot (never the clip or the files
 around it). After that window the picture is only in Evidence, behind a login.
@@ -13,10 +14,11 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from backend.api import agent as agent_api
+from backend.api import device_auth
 from backend.config import EVIDENCE_DIR
 from backend.live.camera_manager import camera_manager
 
@@ -36,7 +38,8 @@ def _recent_alarm(event_id: str) -> dict:
 
 
 @router.get("/{event_id}/snapshot.jpg", include_in_schema=False)
-def alarm_snapshot(event_id: str) -> FileResponse:
+def alarm_snapshot(event_id: str, request: Request) -> FileResponse:
+    device_auth.require_device_or_session(request, device_auth.SIREN)
     event = _recent_alarm(event_id)
     bundle = event.get("evidence_bundle")
     if not bundle:
@@ -48,7 +51,8 @@ def alarm_snapshot(event_id: str) -> FileResponse:
 
 
 @router.get("/{event_id}/brief")
-def alarm_brief(event_id: str) -> dict:
+def alarm_brief(event_id: str, request: Request) -> dict:
+    device_auth.require_device_or_session(request, device_auth.SIREN)
     _recent_alarm(event_id)
     service = agent_api._service
     if service is None:

@@ -95,6 +95,7 @@
   const $ = (id) => document.getElementById(id);
   const params = new URLSearchParams(location.search);
   const cameraId = params.get("camera_id");
+  const pairKey = params.get("key") || "";
 
   // Capture rate: matches the backend's analytics rate. Sending faster would
   // only burn phone battery and WiFi on frames the analysis will drop anyway.
@@ -130,7 +131,7 @@
 
   function openSocket() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    ws = new WebSocket(`${proto}//${location.host}/api/live/ws/ingest/${encodeURIComponent(cameraId)}`);
+    ws = new WebSocket(`${proto}//${location.host}/api/live/ws/ingest/${encodeURIComponent(cameraId)}?key=${encodeURIComponent(pairKey)}`);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => setConn("streaming", "up");
     ws.onclose = (e) => {

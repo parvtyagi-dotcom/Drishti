@@ -15,9 +15,11 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("BORDERWATCH_DISABLE_AUTH", "1")
-# Sign-in is off by default in the app; switch it on here so test_auth.py
-# checks the real login path rather than the local-admin shortcut.
-os.environ["DRISHTI_LOGIN"] = "1"
+# Sign-in is on by default; make sure a developer's DRISHTI_NO_LOGIN does not
+# leak into the run, so test_auth.py checks the real login path rather than
+# the local-admin shortcut.
+os.environ.pop("DRISHTI_NO_LOGIN", None)
+os.environ.pop("DRISHTI_OPEN_DEVICES", None)
 # Demo cameras open video files and start capture threads; a test run should
 # not be doing that in the background. They are opt-in, so this only has to
 # make sure nothing in the environment has switched them on.

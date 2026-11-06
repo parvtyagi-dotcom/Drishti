@@ -30,7 +30,18 @@ export function UploadZone({ onUploaded }: { onUploaded: (video: VideoUpload, fi
   return (
     <div>
       <div
+        role="button"
+        tabIndex={uploading ? -1 : 0}
+        aria-label="Upload surveillance video: drop a file here or press Enter to browse"
+        aria-disabled={uploading}
         onClick={() => !uploading && inputRef.current?.click()}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            if (!uploading) inputRef.current?.click();
+          }
+        }}
         onDragOver={(e) => {
           e.preventDefault();
           setDragOver(true);
@@ -42,7 +53,7 @@ export function UploadZone({ onUploaded }: { onUploaded: (video: VideoUpload, fi
           const file = e.dataTransfer.files?.[0];
           if (file) void handleFile(file);
         }}
-        className={`cursor-pointer rounded-[10px] border-[1.5px] border-dashed px-6 py-16 text-center transition-colors ${
+        className={`cursor-pointer rounded-[10px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-blue border-[1.5px] border-dashed px-6 py-16 text-center transition-colors ${
           dragOver ? "border-accent-blue bg-accent-blue/10" : "border-border-2 bg-bg-2 hover:border-accent-blue/60"
         }`}
       >

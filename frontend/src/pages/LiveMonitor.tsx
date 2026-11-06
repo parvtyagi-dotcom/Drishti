@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, BellRing, Plus, Radio, RefreshCw, RotateCw, Settings2, Siren, Square, VolumeX, Wifi,
   WifiOff, X,
@@ -94,7 +94,7 @@ function VerdictButtons({ event }: { event: LiveEvent }) {
   );
 }
 
-function EventRow({ event }: { event: LiveEvent }) {
+const EventRow = memo(function EventRow({ event }: { event: LiveEvent }) {
   const meta = eventMeta(event.type);
   const Icon = meta.icon;
   const time = new Date(event.wall_time * 1000).toLocaleTimeString([], { hour12: false });
@@ -126,7 +126,7 @@ function EventRow({ event }: { event: LiveEvent }) {
       </div>
     </div>
   );
-}
+});
 
 export function LiveMonitor() {
   const [cameras, setCameras] = useState<LiveCamera[]>([]);
@@ -136,6 +136,10 @@ export function LiveMonitor() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const { events, connected, latestAlarm, clearAlarm } = useLiveEvents();
+
+  const reconnectVideo = useCallback(() => setStreamNonce(Date.now()), []);
+  const toggleSetup = useCallback(() => setSetupOpen((open) => !open), []);
+  const toggleAdd = useCallback(() => setAddOpen((open) => !open), []);
 
   const refresh = useCallback(async () => {
     try {
@@ -176,13 +180,21 @@ export function LiveMonitor() {
     if (soundedAlarmRef.current === key) return;
     soundedAlarmRef.current = key;
     vibrateAlert();
-    void playAlarmSound(latestAlarm.type).then((played) => setAudioBlocked(!played));
+    playAlarmSound(latestAlarm.type)
+      .then((played) => setAudioBlocked(!played))
+      .catch(() => setAudioBlocked(true));
   }, [latestAlarm]);
 
   const healthSummary = useMemo(() => {
     const online = cameras.filter((c) => c.state === "online" && !c.degraded).length;
     return { online, problems: cameras.length - online };
   }, [cameras]);
+
+  const trySiren = useCallback(() => {
+    playSiren()
+      .then((played) => setAudioBlocked(!played))
+      .catch(() => setAudioBlocked(true));
+  }, []);
 
   const toggleCamera = async (camera: LiveCamera) => {
     try {
@@ -218,7 +230,7 @@ export function LiveMonitor() {
           <a
             href="/api/live/siren"
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
             className="flex items-center gap-1.5 rounded border border-border-2 px-3 py-1.5 text-[12px] text-text-secondary hover:bg-bg-3 hover:text-text-primary"
           >
             <Siren size={14} /> Open siren panel
@@ -237,7 +249,7 @@ export function LiveMonitor() {
           and offer the one click that fixes it. */}
       {audioBlocked && (
         <button
-          onClick={() => void playSiren().then((played) => setAudioBlocked(!played))}
+          onClick={trySiren}
           className="flex w-full items-center gap-2.5 rounded border border-accent-amber/40 bg-accent-amber/10 px-4 py-3 text-left text-[12.5px] text-accent-amber"
         >
           <VolumeX size={16} className="shrink-0" />
@@ -283,7 +295,7 @@ export function LiveMonitor() {
           meta={`${cameras.length}`}
           actions={
             <button
-              onClick={() => setAddOpen((open) => !open)}
+              onClick={toggleAdd}
               className={`rounded border p-1.5 ${
                 addOpen
                   ? "border-accent-blue bg-accent-blue/10 text-text-primary"
@@ -339,7 +351,7 @@ export function LiveMonitor() {
             selected && (
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setSetupOpen((open) => !open)}
+                  onClick={toggleSetup}
                   className={`flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-[12px] ${
                     setupOpen
                       ? "border-accent-blue bg-accent-blue/10 text-text-primary"
@@ -378,7 +390,7 @@ export function LiveMonitor() {
                   </select>
                 )}
                 <button
-                  onClick={() => setStreamNonce(Date.now())}
+                  onClick={reconnectVideo}
                   title="Reconnect video"
                   className="rounded border border-border-2 p-1.5 text-text-secondary hover:bg-bg-3 hover:text-text-primary"
                 >

@@ -177,6 +177,32 @@ def downscale_for_analysis(image: np.ndarray, max_width: int | None) -> np.ndarr
 # Every DirectShow webcam open takes this lock; each holds it under a second.
 WEBCAM_OPEN_LOCK = threading.Lock()
 
+def open_webcam(index: int):
+    """Open a local webcam the way every caller must: (capture, msmf_only).
+
+    DirectShow first, every time. Remembering a webcam as Media-Foundation-
+    only after one DirectShow failure stuck two USB webcams on MSMF for good,
+    where they gave black frames at 1fps; the failure itself was only another
+    open of a different webcam at the same moment, which the lock prevents.
+    MSMF stays the fallback for cameras that register only there (DroidCam's
+    phone webcam) - msmf_only tells the caller it got one of those. Shared by
+    the live reader and the webcam scan so the two can never drift apart.
+    """
+    if os.name != "nt":
+        return cv2.VideoCapture(index, cv2.CAP_ANY), False
+    with WEBCAM_OPEN_LOCK:
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+    if cap.isOpened():
+        return cap, False
+    cap.release()
+    return cv2.VideoCapture(index, cv2.CAP_MSMF), True
+
+
+# Network cameras: how long to wait for the stream to open and for each frame
+# before treating the link as dropped and reconnecting.
+NETWORK_OPEN_TIMEOUT_MS = 10_000
+NETWORK_READ_TIMEOUT_MS = 10_000
+
 ONLINE = "online"
 CONNECTING = "connecting"
 RECONNECTING = "reconnecting"
@@ -372,22 +398,7 @@ class LiveStreamReader:
             # backend can take ten. Some virtual cameras (DroidCam's phone
             # webcam among them) register only with Media Foundation, so fall
             # back to it when DirectShow cannot open the index.
-            index = int(self.source.strip())
-            if os.name == "nt":
-                # DirectShow first, every time. Remembering a webcam as
-                # Media-Foundation-only after one DirectShow failure stuck
-                # two USB webcams on MSMF for good, where they gave black
-                # frames at 1fps; the failure itself was only another open
-                # of a different webcam at the same moment, which the lock
-                # now prevents. MSMF stays the fallback for cameras that
-                # register only there (DroidCam's phone webcam).
-                with WEBCAM_OPEN_LOCK:
-                    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-                if not cap.isOpened():
-                    cap.release()
-                    cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
-            else:
-                cap = cv2.VideoCapture(index, cv2.CAP_ANY)
+            cap, _msmf_only = open_webcam(int(self.source.strip()))
             # Webcams open at 640x480 unless asked; faces at a few metres need
             # more pixels than that. A camera without HD keeps its own size.
             # Then ask for 30fps MJPG: uncompressed 720p is all a USB 2.0
@@ -401,6 +412,14 @@ class LiveStreamReader:
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
                 cap.set(cv2.CAP_PROP_FPS, 30)
                 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        elif self.is_network_source:
+            # Without timeouts a half-dead RTSP link blocks open() or read()
+            # forever: the reconnect path never runs, the feed just freezes,
+            # and stop() cannot interrupt the stuck read.
+            cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG, [
+                cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, NETWORK_OPEN_TIMEOUT_MS,
+                cv2.CAP_PROP_READ_TIMEOUT_MSEC, NETWORK_READ_TIMEOUT_MS,
+            ])
         else:
             cap = cv2.VideoCapture(self.source)
         if not cap.isOpened():

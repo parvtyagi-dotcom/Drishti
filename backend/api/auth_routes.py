@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
+from collections import defaultdict, deque
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from backend.api.auth import (
     ADMIN, AUDITOR, OPERATOR, ROLES, TOKEN_TTL_SEC, User, authenticate, create_user,
-    current_user, google_client_id, has_users, issue_token, list_users, require_role,
+    _token_from, current_user, google_client_id, has_users, issue_token, list_users, require_role,
+    revoke_token,
 )
 
 logger = logging.getLogger("backend.api.auth_routes")
@@ -35,15 +39,89 @@ class CreateUserRequest(BaseModel):
     role: str = Field(default=OPERATOR)
 
 
-def _set_session_cookie(response: Response, token: str) -> None:
+class LoginThrottle:
+    """Refuse further logins from one client after repeated failures.
+
+    Each attempt costs a 240k-round PBKDF2, so an unthrottled login endpoint
+    was both a password-guessing oracle and a way to pin the CPU the camera
+    analysis needs. Kept in memory: a restart clearing it is acceptable for a
+    single-site edge server.
+    """
+
+    MAX_FAILURES = 5
+    WINDOW_SEC = 300.0
+    # Bound on clients tracked at once, so rotating source addresses cannot
+    # grow this without limit; the oldest entries are dropped first.
+    MAX_TRACKED = 10_000
+
+    def __init__(self):
+        self._failures: dict[str, deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def _recent(self, key: str, now: float) -> deque[float]:
+        attempts = self._failures.get(key)
+        if attempts is None:
+            return deque()
+        while attempts and now - attempts[0] > self.WINDOW_SEC:
+            attempts.popleft()
+        if not attempts:
+            del self._failures[key]  # forget clients whose failures have aged out
+            return deque()
+        return attempts
+
+    def blocked(self, key: str) -> bool:
+        with self._lock:
+            return len(self._recent(key, time.monotonic())) >= self.MAX_FAILURES
+
+    def failed(self, key: str) -> None:
+        with self._lock:
+            now = time.monotonic()
+            self._recent(key, now)
+            self._failures[key].append(now)
+            while len(self._failures) > self.MAX_TRACKED:
+                self._failures.pop(next(iter(self._failures)))
+
+    def succeeded(self, key: str) -> None:
+        with self._lock:
+            self._failures.pop(key, None)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._failures.clear()
+
+
+login_throttle = LoginThrottle()
+
+
+def _client_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def google_default_role() -> str:
+    """Role for a Google sign-in. Read-only unless configured otherwise: an
+    account that passes the allowlist should not become an administrator by
+    default."""
+    role = os.environ.get("GOOGLE_DEFAULT_ROLE", AUDITOR).strip().upper()
+    return role if role in ROLES else AUDITOR
+
+
+def google_email_allowed(email: str) -> bool:
+    """Only listed addresses or domains may sign in. An empty allowlist used to
+    mean "every Google account on earth"; now it means nobody, until one is set."""
+    emails, domains = _csv_env("GOOGLE_ALLOWED_EMAILS"), _csv_env("GOOGLE_ALLOWED_DOMAINS")
+    return email in emails or email.rsplit("@", 1)[-1] in domains
+
+
+def _set_session_cookie(request: Request, response: Response, token: str) -> None:
     response.set_cookie(
         "bw_session", token,
         max_age=TOKEN_TTL_SEC,
         httponly=True,       # not readable by scripts, so XSS cannot lift it
         samesite="lax",
-        # Not forced secure: the edge deployment is often plain http on a
-        # closed LAN, and a cookie marked secure would simply never be sent.
-        secure=False,
+        # Secure whenever the request itself came over https. Plain-http LAN
+        # deployments still work (a secure cookie would never be sent there),
+        # but an https deployment no longer exposes the session over http.
+        secure=request.url.scheme == "https",
         path="/",
     )
 
@@ -61,13 +139,16 @@ def whoami(request: Request) -> dict:
     user = decode_token(token) if token else None
     if user is not None:
         return {"configured": True, "authenticated": True, "user": user.public()}
-    if not has_users() and not google_client_id():
+    # "Configured" means a local administrator exists. Google sign-in alone
+    # does not count: its accounts are read-only by default and may be
+    # restricted to nobody, so the first-run screen must still appear.
+    if not has_users():
         return {"configured": False, "authenticated": False, "user": None}
     return {"configured": True, "authenticated": False, "user": None}
 
 
 @router.post("/bootstrap", status_code=201)
-def bootstrap_admin(req: CreateUserRequest, response: Response) -> dict:
+def bootstrap_admin(req: CreateUserRequest, request: Request, response: Response) -> dict:
     """Create the first administrator.
 
     Only available while no account exists, so it cannot be used later to mint
@@ -79,33 +160,39 @@ def bootstrap_admin(req: CreateUserRequest, response: Response) -> dict:
         user = create_user(req.username, req.password, ADMIN)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    token = issue_token(user)
-    _set_session_cookie(response, token)
-    return {"token": token, "user": {"username": user.username, "role": user.role}}
+    _set_session_cookie(request, response, issue_token(user))
+    # The session lives only in the httpOnly cookie. Returning the token in
+    # the body as well handed it to page scripts, which is what httpOnly is
+    # there to prevent.
+    return {"user": {"username": user.username, "role": user.role}}
 
 
 @router.post("/login")
-def login(req: LoginRequest, response: Response) -> dict:
+def login(req: LoginRequest, request: Request, response: Response) -> dict:
+    client = _client_key(request)
+    if login_throttle.blocked(client):
+        raise HTTPException(429, "too many failed sign-in attempts - wait a few minutes and try again")
     user = authenticate(req.username, req.password)
     if user is None:
+        login_throttle.failed(client)
         # One message for both failure modes, so it cannot be used to discover
         # which usernames are valid.
         raise HTTPException(401, "invalid username or password")
-    token = issue_token(user)
-    _set_session_cookie(response, token)
-    return {"token": token, "user": {"username": user.username, "role": user.role}}
+    login_throttle.succeeded(client)
+    _set_session_cookie(request, response, issue_token(user))
+    return {"user": {"username": user.username, "role": user.role}}
 
 
 @router.post("/google")
-def google_login(req: GoogleLoginRequest, response: Response) -> dict:
+def google_login(req: GoogleLoginRequest, request: Request, response: Response) -> dict:
     """Exchange a Google ID token (from Sign in with Google) for a session.
 
     The token's signature, expiry and audience are verified against Google's
     public keys; nothing the browser claims about the user is trusted.
-    Optional restrictions (empty = allow everyone):
+    Required allowlist (empty = nobody may sign in with Google):
         GOOGLE_ALLOWED_EMAILS   comma-separated exact addresses
         GOOGLE_ALLOWED_DOMAINS  comma-separated domains, e.g. example.com
-    Role for Google users: GOOGLE_DEFAULT_ROLE (default ADMIN, for demos).
+    Role for Google users: GOOGLE_DEFAULT_ROLE (default AUDITOR, read-only).
     """
     client_id = google_client_id()
     if not client_id:
@@ -131,24 +218,24 @@ def google_login(req: GoogleLoginRequest, response: Response) -> dict:
     email = str(info.get("email", "")).lower()
     if not email or not info.get("email_verified"):
         raise HTTPException(401, "Google account email is not verified")
-    emails, domains = _csv_env("GOOGLE_ALLOWED_EMAILS"), _csv_env("GOOGLE_ALLOWED_DOMAINS")
-    if (emails or domains) and email not in emails and email.rsplit("@", 1)[-1] not in domains:
-        raise HTTPException(403, "this Google account is not allowed to use Drishti")
+    if not google_email_allowed(email):
+        raise HTTPException(
+            403, "this Google account is not allowed to use Drishti "
+                 "(an administrator must list it in GOOGLE_ALLOWED_EMAILS or GOOGLE_ALLOWED_DOMAINS)",
+        )
 
-    role = os.environ.get("GOOGLE_DEFAULT_ROLE", ADMIN).strip().upper()
-    if role not in ROLES:
-        role = ADMIN
+    role = google_default_role()
     user = User(
         username=email, role=role, name=str(info.get("name") or email),
         email=email, picture=str(info.get("picture") or ""),
     )
-    token = issue_token(user)
-    _set_session_cookie(response, token)
-    return {"token": token, "user": user.public()}
+    _set_session_cookie(request, response, issue_token(user))
+    return {"user": user.public()}
 
 
 @router.post("/logout")
-def logout(response: Response) -> dict:
+def logout(request: Request, response: Response) -> dict:
+    revoke_token(_token_from(request))
     response.delete_cookie("bw_session", path="/")
     return {"ok": True}
 

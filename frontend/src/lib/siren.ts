@@ -18,6 +18,31 @@ const HIGH_HZ = 1100;
 
 let context: AudioContext | null = null;
 
+// Oscillators currently sounding. A new alarm replaces them rather than
+// layering on top, and stopSiren() can silence them early.
+const active = new Set<{ osc: OscillatorNode; gain: GainNode }>();
+
+function track(osc: OscillatorNode, gain: GainNode): void {
+  const entry = { osc, gain };
+  active.add(entry);
+  osc.onended = () => {
+    active.delete(entry);
+    osc.disconnect();
+    gain.disconnect();
+  };
+}
+
+/** Silence any alert sound that is still playing. Safe to call at any time. */
+export function stopSiren(): void {
+  for (const { osc } of [...active]) {
+    try {
+      osc.stop();
+    } catch {
+      /* already stopped */
+    }
+  }
+}
+
 function getContext(): AudioContext | null {
   if (context) return context;
   const Ctor = window.AudioContext ?? (window as unknown as {
@@ -44,8 +69,10 @@ export async function playSiren(durationSec: number = DEFAULT_SECONDS): Promise<
     if (audio.state === "suspended") await audio.resume();
     if (audio.state !== "running") return false;
 
+    stopSiren();
     const oscillator = audio.createOscillator();
     const gain = audio.createGain();
+    track(oscillator, gain);
     oscillator.type = "sawtooth";
     oscillator.connect(gain).connect(audio.destination);
 
@@ -109,11 +136,13 @@ export async function playOfflineTone(): Promise<boolean> {
   try {
     if (audio.state === "suspended") await audio.resume();
     if (audio.state !== "running") return false;
+    stopSiren();
     const start = audio.currentTime;
     [880, 660, 440].forEach((hz, i) => {
       const at = start + i * 0.18;
       const osc = audio.createOscillator();
       const gain = audio.createGain();
+      track(osc, gain);
       osc.type = "square";
       osc.frequency.setValueAtTime(hz, at);
       osc.connect(gain).connect(audio.destination);

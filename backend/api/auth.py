@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,8 @@ ROLES = (ADMIN, OPERATOR, AUDITOR)
 
 USERS_PATH = DATA_DIR / "users.json"
 SECRET_PATH = DATA_DIR / "session-secret"
+REVOKED_PATH = DATA_DIR / "revoked-sessions.json"
+_revoked_lock = threading.Lock()
 # A control-room screen and a phone propped at a post are not casual browser
 # tabs - they are appliances that must still be working after a weekend.
 # Re-authenticating a wall display every twelve hours is how people end up
@@ -159,8 +162,64 @@ def authenticate(username: str, password: str) -> User | None:
 
 # --- tokens ------------------------------------------------------------------
 
+_revoked_cache: dict[str, float] = {}
+_revoked_cache_key: tuple | None = None
+
+
+def _load_revoked() -> dict[str, float]:
+    """Token id -> its expiry, for sessions ended with Sign out.
+
+    Re-read only when the file changes (this runs on every request). If the
+    file cannot be read or parsed, the last good copy stays in force: losing
+    revocations must not quietly bring signed-out sessions back.
+    """
+    global _revoked_cache_key
+    try:
+        stat = REVOKED_PATH.stat()
+    except OSError:
+        return _revoked_cache
+    key = (str(REVOKED_PATH), stat.st_mtime_ns, stat.st_size)
+    if key == _revoked_cache_key:
+        return _revoked_cache
+    try:
+        data = json.loads(REVOKED_PATH.read_text(encoding="utf-8"))
+        _revoked_cache.update({str(k): float(v) for k, v in data.items()})
+        _revoked_cache_key = key
+    except (OSError, ValueError, AttributeError):
+        logger.warning("could not read %s; keeping the revocations already loaded", REVOKED_PATH)
+    return _revoked_cache
+
+
+def revoke_token(token: str | None) -> None:
+    """End a session for good, not just on this browser.
+
+    Deleting the cookie only forgets the token on one device; a copy taken
+    from that device stayed valid for its full 30 days. Revoked ids are kept
+    until the token would have expired anyway, so the list stays short.
+    """
+    if not token:
+        return
+    payload = _verified_payload(token)
+    if payload is None or not payload.get("jti"):
+        return
+    with _revoked_lock:
+        now = time.time()
+        expiry = float(payload.get("exp", now + TOKEN_TTL_SEC))
+        _revoked_cache[payload["jti"]] = expiry  # effective at once, whatever the disk does
+        revoked = {k: v for k, v in _load_revoked().items() if v > now}
+        revoked[payload["jti"]] = expiry
+        REVOKED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # Write-then-rename, so a reader never sees a half-written file.
+        tmp = REVOKED_PATH.with_name(REVOKED_PATH.name + ".tmp")
+        tmp.write_text(json.dumps(revoked), encoding="utf-8")
+        os.replace(tmp, REVOKED_PATH)
+
+
 def issue_token(user: User) -> str:
-    payload = {"sub": user.username, "role": user.role, "exp": time.time() + TOKEN_TTL_SEC}
+    payload = {
+        "sub": user.username, "role": user.role, "exp": time.time() + TOKEN_TTL_SEC,
+        "jti": secrets.token_hex(12),
+    }
     if user.email:
         payload.update(name=user.name, email=user.email, picture=user.picture)
     raw = json.dumps(payload, separators=(",", ":")).encode()
@@ -169,7 +228,8 @@ def issue_token(user: User) -> str:
     return f"{body}.{signature}"
 
 
-def decode_token(token: str) -> User | None:
+def _verified_payload(token: str) -> dict | None:
+    """The token's claims if its signature is ours, else None."""
     try:
         body, signature = token.split(".", 1)
     except ValueError:
@@ -182,8 +242,15 @@ def decode_token(token: str) -> User | None:
         payload = json.loads(base64.urlsafe_b64decode(padded))
     except (ValueError, TypeError):
         return None
-    if payload.get("exp", 0) < time.time():
+    return payload if isinstance(payload, dict) else None
+
+
+def decode_token(token: str) -> User | None:
+    payload = _verified_payload(token)
+    if payload is None or payload.get("exp", 0) < time.time():
         return None
+    if payload.get("jti") and payload["jti"] in _load_revoked():
+        return None  # signed out
     return User(
         username=payload.get("sub", ""), role=payload.get("role", AUDITOR),
         name=payload.get("name", ""), email=payload.get("email", ""), picture=payload.get("picture", ""),
@@ -201,9 +268,10 @@ def _token_from(request: Request) -> str | None:
     return request.cookies.get("bw_session")
 
 
-# Sign-in is off by default: every request acts as a local administrator.
-# Set DRISHTI_LOGIN=1 to require accounts again - do that before exposing the
-# server to any network you do not fully trust.
+# Sign-in is ON by default. The server has to listen on the LAN for phones and
+# cameras, so "no login" meant every device on that network was an
+# administrator of a surveillance system. DRISHTI_NO_LOGIN=1 restores the old
+# behaviour for a single-machine development setup only.
 NO_LOGIN_USER = User(username="local-admin", role=ADMIN)
 
 
@@ -213,7 +281,7 @@ def google_client_id() -> str:
 
 
 def no_login() -> bool:
-    return not os.environ.get("DRISHTI_LOGIN") and not google_client_id()
+    return os.environ.get("DRISHTI_NO_LOGIN") == "1" and not google_client_id()
 
 
 def current_user(request: Request) -> User:

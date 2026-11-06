@@ -32,11 +32,11 @@ export interface AuditVerification {
 export const authApi = {
   me: () => api.get<SessionState>("/api/auth/me"),
   login: (username: string, password: string) =>
-    api.post<{ token: string; user: SessionUser }>("/api/auth/login", { username, password }),
+    api.post<{ user: SessionUser }>("/api/auth/login", { username, password }),
   google: (credential: string) =>
-    api.post<{ token: string; user: SessionUser }>("/api/auth/google", { credential }),
+    api.post<{ user: SessionUser }>("/api/auth/google", { credential }),
   bootstrap: (username: string, password: string) =>
-    api.post<{ token: string; user: SessionUser }>("/api/auth/bootstrap", { username, password }),
+    api.post<{ user: SessionUser }>("/api/auth/bootstrap", { username, password }),
   logout: () => api.post<{ ok: boolean }>("/api/auth/logout"),
   listUsers: () => api.get<SessionUser[]>("/api/auth/users"),
   addUser: (username: string, password: string, role: Role) =>

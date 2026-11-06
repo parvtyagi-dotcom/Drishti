@@ -1,7 +1,9 @@
 import { AlertTriangle, UserRound, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
 import { uploadReferencePhotos } from "../../api/references";
+
+const fileKey = (f: File) => `${f.name}-${f.size}-${f.lastModified}`;
 
 export function ReferencePhotoUpload({
   onChange,
@@ -12,6 +14,16 @@ export function ReferencePhotoUpload({
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // One object URL per file, created once and revoked when the files change
+  // or the component unmounts (creating them in render leaked every render).
+  const previews = useMemo(
+    () => files.map((file) => ({ key: fileKey(file), url: URL.createObjectURL(file) })),
+    [files],
+  );
+  useEffect(() => {
+    return () => previews.forEach((p) => URL.revokeObjectURL(p.url));
+  }, [previews]);
 
   async function commit(nextFiles: File[]) {
     setFiles(nextFiles);
@@ -34,7 +46,15 @@ export function ReferencePhotoUpload({
 
   function addFiles(newFiles: FileList | null) {
     if (!newFiles) return;
-    const merged = [...files, ...Array.from(newFiles)].slice(0, 6);
+    // Identical files are skipped so each preview keeps a unique stable key.
+    const seen = new Set(files.map(fileKey));
+    const fresh = Array.from(newFiles).filter((f) => {
+      const k = fileKey(f);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    const merged = [...files, ...fresh].slice(0, 6);
     void commit(merged);
   }
 
@@ -50,11 +70,12 @@ export function ReferencePhotoUpload({
       </div>
 
       <div className="grid grid-cols-6 gap-2">
-        {files.map((file, i) => (
-          <div key={i} className="group relative aspect-square overflow-hidden rounded-md border border-border-1 bg-bg-3">
-            <img src={URL.createObjectURL(file)} alt={`Reference ${i + 1}`} className="h-full w-full object-cover" />
+        {previews.map((preview, i) => (
+          <div key={preview.key} className="group relative aspect-square overflow-hidden rounded-md border border-border-1 bg-bg-3">
+            <img src={preview.url} alt={`Reference ${i + 1}`} className="h-full w-full object-cover" />
             <button
               onClick={() => removeAt(i)}
+              aria-label={`Remove reference photo ${i + 1}`}
               className="absolute right-1 top-1 hidden h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white group-hover:flex"
             >
               <X size={11} />

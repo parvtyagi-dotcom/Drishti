@@ -154,6 +154,14 @@ class TrackerConfig:
     # two webcams on Person ID the every-frame person detection pushed the
     # server to ~76% of a 12-thread CPU and starved one feed to ~3 fps.
     adaptive_person_stride: bool = True
+    # detection_stride for the person_id tracker alone (YOLO + BoT-SORT +
+    # OSNet). None: the same as detection_stride. Separate because the two
+    # trackers want different things on live: at ~3-6 analysed fps a stride
+    # of 5 detects about once a second, so a walking person's box drifts,
+    # BoT-SORT re-assigns a new id and face matches split across ids before
+    # confirmation_observations is reached on any one. The shared tracker
+    # (vehicles, zones) keeps its cheaper stride.
+    person_detection_stride: int | None = None
 
 
 @dataclass
@@ -167,6 +175,16 @@ class PersonIDConfig:
     """
 
     similarity_threshold: float = 0.42
+    # One reference photo clearing the threshold counts as a face match. It
+    # was 2, which with two or more photos meant EVERY one of them (up to 2)
+    # had to clear the threshold on the same frame - and two photos rarely
+    # share the probe's pose and lighting, so a genuine target matched one
+    # photo at 0.5 and the other at 0.35 frame after frame and was never
+    # confirmed. False-positive protection now comes from time instead:
+    # confirmation_observations (2) separate frames must each match on the
+    # same track before TARGET_CONFIRMED. Live uses 1 (see
+    # backend.live.live_config.live_person_id_config); Forensic Mode keeps the
+    # stricter, previously validated 2.
     min_reference_votes: int = 2
     # Number of separate matching observations (frames) required before a
     # track is promoted to CONFIRMED target.
@@ -226,7 +244,21 @@ class PersonIDConfig:
     # like. SFace on this project's CCTV clips: same person ~0.47 on average,
     # different people ~0.10, so 0.25 is a clear "different person".
     face_reject_threshold: float = 0.25
+    # Minimum face width for a veto with ArcFace, whose "different person"
+    # scores sit far from its "same person" ones.
     face_reject_min_width_px: int = 40
+    # Minimum face width for a veto with SFace (the fallback when the ArcFace
+    # model is not installed). SFace's scores on small CCTV faces are noisy
+    # enough that the real target dips under 0.25 at 40-70px, which vetoed
+    # and released the right person; only a large, clear face is trusted.
+    face_reject_min_width_px_sface: int = 80
+    # Consecutive vetoes on the locked target's own track before the lock is
+    # released from it. One bad face sample (motion blur, a turned head) must
+    # not drop a confirmed target; a second in a row is real evidence.
+    target_release_consecutive_vetoes: int = 2
+    # How long (video seconds) a face box stays on screen after the face was
+    # last found - face search is sampled, not run every frame.
+    face_box_hold_sec: float = 1.0
     # How long a vetoed track is barred from appearance matching.
     face_veto_sec: float = 10.0
     # Bounded gallery size -- old embeddings age out rather than growing

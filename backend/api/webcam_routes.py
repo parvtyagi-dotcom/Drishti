@@ -10,7 +10,6 @@ tell the laptop's own camera from the USB one pointing at the gate.
 from __future__ import annotations
 
 import base64
-import os
 import threading
 import time
 
@@ -18,7 +17,7 @@ from fastapi import APIRouter, Depends
 
 from backend.api.auth import ADMIN, OPERATOR, User, require_role
 from backend.api.ownership import current_owner
-from backend.core.video import WEBCAM_OPEN_LOCK
+from backend.core.video import open_webcam
 from backend.live.camera_manager import camera_manager
 
 router = APIRouter(prefix="/api/live/webcams", tags=["live"])
@@ -49,21 +48,11 @@ def _probe(index: int, found: dict[int, dict]) -> None:
     import cv2
 
     frame = None
-    virtual = False
-    if os.name == "nt":
-        # Same order and lock as the camera itself (core/video.py): DirectShow
-        # first, Media Foundation only for devices DirectShow cannot open.
-        with WEBCAM_OPEN_LOCK:
-            cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            cap.release()
-            cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
-            # Real USB webcams all open with DirectShow; what opens only with
-            # MSMF here has been a phone-webcam app (DroidCam), whose picture
-            # is a "Start DroidCam" card until the phone connects.
-            virtual = True
-    else:
-        cap = cv2.VideoCapture(index, cv2.CAP_ANY)
+    # Same order and lock as the camera itself. Real USB webcams all open
+    # with DirectShow; what opens only with MSMF has been a phone-webcam app
+    # (DroidCam), whose picture is a "Start DroidCam" card until the phone
+    # connects - so that one is flagged as virtual.
+    cap, virtual = open_webcam(index)
     try:
         if cap.isOpened():
             frame = _grab(cap)

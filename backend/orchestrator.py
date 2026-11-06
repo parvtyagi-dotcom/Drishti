@@ -24,7 +24,6 @@ as-is by passing it the real target_track_id/zone_states from this run.
 from __future__ import annotations
 
 import math
-import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
@@ -39,8 +38,8 @@ from backend.config import (
 )
 from backend.core.lowlight import process_frame as lowlight_process_frame
 from backend.core.output import (
-    CYAN, MAGENTA, ORANGE, OutputVideoWriter, RED, draw_banner, draw_polygon,
-    draw_target_box, format_timestamp,
+    CYAN, MAGENTA, ORANGE, OutputVideoWriter, RED, YELLOW, draw_banner, draw_polygon,
+    draw_target_box, draw_thin_box, format_timestamp,
 )
 from backend.core.target_lock import TargetLock
 from backend.core.tracker import ObjectTracker
@@ -55,7 +54,11 @@ from backend.modules.person_id.custom_tracker import PersonBotSortTracker
 from backend.modules.person_id.detector import FaceDetector
 from backend.modules.person_id.person_reid import PersonReID
 from backend.modules.person_id.pipeline import _bbox_min_side, _prediction_still_looks_like_target
-from backend.modules.person_id.recognizer import ReferenceSet, best_face_recognizer, upright_face
+from backend.modules.person_id.face_search import (  # noqa: F401  (_find_face is imported by tests)
+    _FaceOrientation, _FaceSighting, _VetoStreaks, _candidate_body_label, _face_bbox_in_crop,
+    _face_box_style, _face_veto_applies, _find_face, _locate_face,
+)
+from backend.modules.person_id.recognizer import ReferenceSet, best_face_recognizer
 from backend.modules.person_id.target_gallery import TargetGallery
 from backend.modules.zone.geometry import Zone, centroid, denormalize_polygon, footpoint
 from backend.modules.zone.state import INSIDE, ZoneMonitor, anyone_near_zone
@@ -235,6 +238,39 @@ class CombinedPipeline:
             ids.update(self.tracker_config.vehicle_class_ids)
         return tuple(sorted(ids)) if ids else None
 
+    def _draw_person_overlays(self, frame, lock: TargetLock, tracks_by_id: dict,
+                              face_sightings: dict, veto_streaks: "_VetoStreaks") -> None:
+        """What person ID is doing before - and besides - the red TARGET box:
+        a yellow CANDIDATE n/N body box on every track gathering face matches
+        while nothing is confirmed, and a thin box on each recently found
+        face (green MATCH for the target, yellow CANDIDATE, faint grey for
+        anyone else). Without these an operator saw nothing at all until
+        confirmation and reasonably concluded detection was broken."""
+        cfg = self.person_id_cfg
+        if not lock.confirmed:
+            for tid, count in lock.candidates().items():
+                track = tracks_by_id.get(tid)
+                if track is not None:
+                    draw_target_box(frame.image, track.bbox,
+                                    label=_candidate_body_label(count, cfg.confirmation_observations),
+                                    color=YELLOW, thickness=2)
+        veto_streaks.prune(frame.timestamp_sec)
+        for tid in list(face_sightings):
+            sighting = face_sightings[tid]
+            if frame.timestamp_sec - sighting.timestamp_sec > cfg.face_box_hold_sec:
+                # Stale: stop drawing it. Its veto streak has its own,
+                # longer window (see _VetoStreaks).
+                del face_sightings[tid]
+                continue
+            track = tracks_by_id.get(tid)
+            if track is None:
+                continue
+            color, label, thickness = _face_box_style(tid, sighting.similarity, lock)
+            tx1, ty1 = track.bbox[0], track.bbox[1]
+            rx1, ry1, rx2, ry2 = sighting.rel_bbox
+            draw_thin_box(frame.image, (tx1 + rx1, ty1 + ry1, tx1 + rx2, ty1 + ry2), color,
+                          label=label, thickness=thickness, label_below=True)
+
     def run(
         self,
         video_path: str | Path | None = None,
@@ -308,6 +344,12 @@ class CombinedPipeline:
         # track id -> timestamp until which its clear, non-matching face bars
         # it from appearance matching (the face veto).
         face_vetoed_until: dict[int, float] = {}
+        # Consecutive vetoes per track: the locked target's own track is only
+        # released after target_release_consecutive_vetoes in a row.
+        veto_streaks = _VetoStreaks(window_sec=self.person_id_cfg.face_veto_sec)
+        # track id -> its latest face, drawn for face_box_hold_sec.
+        face_sightings: dict[int, _FaceSighting] = {}
+        face_orientation = _FaceOrientation(exhaustive=write_output)
 
         # --- anpr state ---
         aggregator = None
@@ -417,7 +459,7 @@ class CombinedPipeline:
                 person_tracker = PersonBotSortTracker(
                     model_path=str(self.tracker_config.model_path),
                     reid=self.person_reid,
-                    detection_stride=self.tracker_config.detection_stride,
+                    detection_stride=self.tracker_config.person_detection_stride or self.tracker_config.detection_stride,
                     confidence=self.tracker_config.confidence,
                     track_buffer=self.person_id_cfg.gap_tolerance_frames,
                     frame_rate=max(1, round(reader.info.fps)) if reader.info.fps else 30,
@@ -488,17 +530,31 @@ class CombinedPipeline:
                                 crop = frame.image[cy1:cy2, cx1:cx2]
                                 if crop.size == 0:
                                     continue
-                                face_crop, face = _find_face(self.face_detector, crop)
+                                face_crop, face, crop_face_bbox = _locate_face(self.face_detector, crop, face_orientation)
                                 if face is None:
                                     continue
                                 person_face_inference_count += 1
                                 probe = self.face_recognizer.embed(face_crop, face)
                                 votes, best_sim = reference_set.vote(probe, self.person_id_cfg.similarity_threshold)
+                                # Remembered relative to the person box, so the
+                                # face box follows the person between samples.
+                                tx1, ty1 = track.bbox[0], track.bbox[1]
+                                fx1, fy1, fx2, fy2 = crop_face_bbox
+                                face_sightings[tid] = _FaceSighting(
+                                    (fx1 + cx1 - tx1, fy1 + cy1 - ty1, fx2 + cx1 - tx1, fy2 + cy1 - ty1),
+                                    best_sim, frame.timestamp_sec,
+                                )
                                 # Face veto: a face clear enough to judge that is
                                 # plainly someone else outranks any match on
                                 # clothes and build.
-                                if (face.width_px >= self.person_id_cfg.face_reject_min_width_px
-                                        and best_sim < self.person_id_cfg.face_reject_threshold):
+                                vetoed = _face_veto_applies(
+                                    face.width_px, best_sim, self.face_recognizer.backend,
+                                    self.person_id_cfg.face_reject_threshold, self.person_id_cfg,
+                                )
+                                streak = veto_streaks.record(tid, vetoed, frame.timestamp_sec)
+                                if vetoed:
+                                    if is_target and streak < self.person_id_cfg.target_release_consecutive_vetoes:
+                                        continue  # one bad sample does not drop a confirmed target
                                     face_vetoed_until[tid] = frame.timestamp_sec + self.person_id_cfg.face_veto_sec
                                     if is_target:
                                         person_lock.release(frame.index, frame.timestamp_sec,
@@ -795,14 +851,24 @@ class CombinedPipeline:
                         draw_target_box(frame.image, tracks_by_id[anpr_target_tid].bbox, label=label)
                         drawn.add(anpr_target_tid)
 
+                    if req.enable_person_id:
+                        self._draw_person_overlays(frame, person_lock, person_tracks_by_id, face_sightings, veto_streaks)
+
                     if req.enable_anpr and not req.target_plate:
                         for tid, track in tracks_by_id.items():
                             if tid in drawn or track.class_id not in self.tracker_config.vehicle_class_ids:
                                 continue
                             agg = aggregator.aggregate(tid)
-                            if agg is not None and agg.confirmed:
-                                draw_target_box(frame.image, track.bbox, label=[agg.text, f"{round(agg.mean_confidence)}%"], color=CYAN)
+                            if agg is None:
+                                continue
+                            label, thickness = _plate_box_style(agg)
+                            if agg.confirmed:
+                                draw_target_box(frame.image, track.bbox, label=label, color=CYAN, thickness=thickness)
                                 drawn.add(tid)
+                            else:
+                                # Read but not yet confirmed: shows ANPR is
+                                # working long before the vote completes.
+                                draw_thin_box(frame.image, track.bbox, CYAN, label=label[0], thickness=thickness)
 
                     for tid in zone_inside_any:
                         if tid in drawn or tid not in tracks_by_id:
@@ -843,6 +909,13 @@ class CombinedPipeline:
                         writer.write(frame.image)
                     if frame_callback is not None:
                         frame_callback(frame.image, all_events[events_before:])
+                        if not write_output:
+                            # A live run never ends, and the callback has just
+                            # taken this frame's events (the session logs them
+                            # to the event store). Keeping every event of a
+                            # weeks-long stream in memory is what slowly ran
+                            # long live sessions out of RAM.
+                            all_events.clear()
                     if progress_cb is not None and (frame.index % progress_stride == 0) and reader.info.frame_count:
                         progress_cb(min(1.0, frame.index / reader.info.frame_count))
 
@@ -878,6 +951,8 @@ class CombinedPipeline:
                 "reid_inference_count": person_reid_inference_count,
                 "detector_inference_count": person_tracker.detection_count if person_tracker else 0,
                 "predicted_frame_count": person_predicted_frame_count,
+                "face_recognizer_backend": self.face_recognizer.backend,
+                "face_search_sideways": face_orientation.sideways,
             }
 
         anpr_summary = None
@@ -923,6 +998,7 @@ class CombinedPipeline:
                 "legibility_warning": legibility,
                 "plate_crops_skipped": plate_quality_skipped,
                 "ocr_status": self.ocr.status.to_dict(),
+                "detector_backend": self.plate_detector.backend,
             }
 
         zones_summary = None
@@ -961,24 +1037,9 @@ class CombinedPipeline:
         )
 
 
-# A person crop shorter than this is enlarged before looking for a face: a
-# distant person's face is only a few dozen pixels and the detector misses it.
-_FACE_UPSCALE_BELOW_PX = 240
-
-
-def _find_face(detector, crop):
-    """The face in a person crop, from a camera mounted at any angle.
-
-    Small crops are enlarged first, and the crop is turned until the face is
-    upright (a sideways camera shows sideways faces, which the detector does
-    not find). Returns (image the face was found in, face); face.width_px is
-    the face's width in the original crop's pixels.
-    """
-    scale = 1.0
-    if crop.shape[0] < _FACE_UPSCALE_BELOW_PX:
-        scale = min(3.0, _FACE_UPSCALE_BELOW_PX / max(1, crop.shape[0]))
-        crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    image, face = upright_face(crop, detector)
-    if face is not None:
-        face.width_px = (face.bbox[2] - face.bbox[0]) / scale
-    return image, face
+def _plate_box_style(agg) -> tuple[list[str], int]:
+    """(label lines, thickness): a confirmed plate gets the full box, a
+    provisional read a thin one marked '?'."""
+    if agg.confirmed:
+        return [agg.text, f"{round(agg.mean_confidence)}%"], 3
+    return [f"{agg.text} ?"], 1

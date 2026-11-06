@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { ImageUp, Loader2, Map as MapIcon, MapPin, Pencil, Plus, Route, Trash2, X } from "lucide-react";
 import { Panel } from "../components/common/Panel";
 import type { SessionUser } from "../api/auth";
@@ -54,6 +54,49 @@ function markerColour(camera: LiveCamera | undefined, alarm: boolean, onPath: bo
   return "bg-text-tertiary";
 }
 
+/** Keeps the previous reference when a poll returned identical data, so
+ * unchanged cameras/maps do not re-render everything beneath them. */
+function keepIfSame<T>(prev: T, next: T): T {
+  try {
+    return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+  } catch {
+    return next;
+  }
+}
+
+interface CameraMarkerProps {
+  name: string;
+  x: number;
+  y: number;
+  camera: LiveCamera | undefined;
+  alarmed: boolean;
+  stop: Stop | undefined;
+  canEdit: boolean;
+  onDragStart: (name: string, e: ReactPointerEvent<HTMLButtonElement>) => void;
+  onDragMove: (e: ReactPointerEvent<HTMLButtonElement>) => void;
+  onDragEnd: () => void;
+}
+
+const CameraMarker = memo(function CameraMarker({
+  name, x, y, camera, alarmed, stop, canEdit, onDragStart, onDragMove, onDragEnd,
+}: CameraMarkerProps) {
+  return (
+    <button
+      onPointerDown={(e) => onDragStart(name, e)}
+      onPointerMove={onDragMove}
+      onPointerUp={(e) => { e.stopPropagation(); onDragEnd(); }}
+      title={`${name}${camera ? ` · ${camera.state}` : " · not connected"}${camera?.location ? ` · ${camera.location}` : ""}`}
+      className={`absolute flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-1 ${canEdit ? "cursor-grab active:cursor-grabbing" : "cursor-default"}`}
+      style={{ left: `${x * 100}%`, top: `${y * 100}%`, touchAction: "none" }}
+    >
+      <span className={`h-3.5 w-3.5 rounded-full border-2 border-bg-0 ${markerColour(camera, alarmed, !!stop)}`} />
+      <span className="whitespace-nowrap rounded bg-bg-0/85 px-1.5 py-[1px] text-[10.5px] font-semibold text-text-primary">
+        {name}{stop ? ` · ${clock(stop.time)}` : ""}
+      </span>
+    </button>
+  );
+});
+
 export function SiteMap({ user }: { user?: SessionUser | null }) {
   const canEdit = user?.role === "ADMIN" || user?.role === "OPERATOR";
   const [map, setMap] = useState<SiteMapState | null>(null);
@@ -70,18 +113,25 @@ export function SiteMap({ user }: { user?: SessionUser | null }) {
   const boardRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // Each load takes a ticket; only the newest ticket may write state, and
+  // unmounting (or a site change) revokes all outstanding ones.
+  const loadTicket = useRef(0);
+
   const load = useCallback(async () => {
+    const ticket = ++loadTicket.current;
     try {
       const [m, c, e, p] = await Promise.all([
         mapApi.get(site), liveApi.listCameras(), liveApi.recentEvents(300),
         mapApi.prediction(site).catch(() => ({ prediction: null })),
       ]);
-      setPrediction(p.prediction);
-      setMap(m);
-      setCameras(c);
+      if (ticket !== loadTicket.current) return;
+      setPrediction((prev) => keepIfSame(prev, p.prediction));
+      setMap((prev) => keepIfSame(prev, m));
+      setCameras((prev) => keepIfSame(prev, c));
       setEvents(e);
       setNow(Date.now() / 1000);
     } catch (err) {
+      if (ticket !== loadTicket.current) return;
       // A remembered site that was removed since: fall back to the default.
       if (err instanceof ApiError && err.status === 404 && site) return chooseSite(null);
       setError(err instanceof ApiError ? err.message : "Could not load the site map.");
@@ -91,9 +141,13 @@ export function SiteMap({ user }: { user?: SessionUser | null }) {
   }, [site]);
 
   useEffect(() => {
+    const tickets = loadTicket;
     void load();
     const timer = window.setInterval(() => void load(), REFRESH_MS);
-    return () => window.clearInterval(timer);
+    return () => {
+      tickets.current++;
+      window.clearInterval(timer);
+    };
   }, [load]);
 
   const byName = useMemo(() => new Map(cameras.map((c) => [c.name, c])), [cameras]);
@@ -107,27 +161,45 @@ export function SiteMap({ user }: { user?: SessionUser | null }) {
     [events],
   );
 
-  const positions = { ...(map?.positions ?? {}) };
-  if (dragging) positions[dragging.name] = [dragging.x, dragging.y];
-  const placedNames = Object.keys(positions);
-  const unplaced = cameras.map((c) => c.name).filter((n) => !(n in positions));
-  const pathPoints = path.filter((s) => s.camera in positions);
+  const positions = useMemo(() => {
+    const merged = { ...(map?.positions ?? {}) };
+    if (dragging) merged[dragging.name] = [dragging.x, dragging.y];
+    return merged;
+  }, [map?.positions, dragging]);
+  const placedNames = useMemo(() => Object.keys(positions), [positions]);
+  const unplaced = useMemo(
+    () => cameras.map((c) => c.name).filter((n) => !(n in positions)),
+    [cameras, positions],
+  );
+  const pathPoints = useMemo(() => path.filter((s) => s.camera in positions), [path, positions]);
+  const lastStopByCamera = useMemo(() => {
+    const m = new Map<string, Stop>();
+    for (const stop of pathPoints) m.set(stop.camera, stop);
+    return m;
+  }, [pathPoints]);
 
-  function fractionAt(clientX: number, clientY: number): [number, number] | null {
+  // Handlers read through refs so the memoized markers keep stable props.
+  const draggingRef = useRef(dragging);
+  draggingRef.current = dragging;
+  const positionsRef = useRef(positions);
+  positionsRef.current = positions;
+
+  const fractionAt = useCallback((clientX: number, clientY: number): [number, number] | null => {
     const box = boardRef.current?.getBoundingClientRect();
     if (!box) return null;
     const clamp = (v: number) => Math.min(1, Math.max(0, v));
     return [clamp((clientX - box.left) / box.width), clamp((clientY - box.top) / box.height)];
-  }
+  }, []);
 
-  async function save(name: string, x: number | null, y: number | null) {
+  const siteId = map?.site_id ?? site;
+  const save = useCallback(async (name: string, x: number | null, y: number | null) => {
     try {
-      const { positions: saved } = await mapApi.place(map?.site_id ?? site, name, x, y);
+      const { positions: saved } = await mapApi.place(siteId, name, x, y);
       setMap((m) => (m ? { ...m, positions: saved } : m));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not save the position.");
     }
-  }
+  }, [siteId]);
 
   function boardClick(e: ReactPointerEvent<HTMLDivElement>) {
     if (!placing || !canEdit) return;
@@ -137,25 +209,27 @@ export function SiteMap({ user }: { user?: SessionUser | null }) {
     setPlacing(null);
   }
 
-  function startDrag(name: string, e: ReactPointerEvent<HTMLButtonElement>) {
+  const startDrag = useCallback((name: string, e: ReactPointerEvent<HTMLButtonElement>) => {
     if (!canEdit) return;
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
-    const [x, y] = positions[name];
+    const [x, y] = positionsRef.current[name];
     setDragging({ name, x, y });
-  }
+  }, [canEdit]);
 
-  function moveDrag(e: ReactPointerEvent<HTMLButtonElement>) {
-    if (!dragging) return;
+  const moveDrag = useCallback((e: ReactPointerEvent<HTMLButtonElement>) => {
+    const current = draggingRef.current;
+    if (!current) return;
     const at = fractionAt(e.clientX, e.clientY);
-    if (at) setDragging({ ...dragging, x: at[0], y: at[1] });
-  }
+    if (at) setDragging({ ...current, x: at[0], y: at[1] });
+  }, [fractionAt]);
 
-  function endDrag() {
-    if (!dragging) return;
-    void save(dragging.name, dragging.x, dragging.y);
+  const endDrag = useCallback(() => {
+    const current = draggingRef.current;
+    if (!current) return;
+    void save(current.name, current.x, current.y);
     setDragging(null);
-  }
+  }, [save]);
 
   async function upload(file: File | undefined) {
     if (!file) return;
@@ -346,27 +420,21 @@ export function SiteMap({ user }: { user?: SessionUser | null }) {
               })()}
             </svg>
 
-            {placedNames.map((name) => {
-              const [x, y] = positions[name];
-              const camera = byName.get(name);
-              const stop = [...pathPoints].reverse().find((s) => s.camera === name);
-              return (
-                <button
-                  key={name}
-                  onPointerDown={(e) => startDrag(name, e)}
-                  onPointerMove={moveDrag}
-                  onPointerUp={(e) => { e.stopPropagation(); endDrag(); }}
-                  title={`${name}${camera ? ` · ${camera.state}` : " · not connected"}${camera?.location ? ` · ${camera.location}` : ""}`}
-                  className={`absolute flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-1 ${canEdit ? "cursor-grab active:cursor-grabbing" : "cursor-default"}`}
-                  style={{ left: `${x * 100}%`, top: `${y * 100}%`, touchAction: "none" }}
-                >
-                  <span className={`h-3.5 w-3.5 rounded-full border-2 border-bg-0 ${markerColour(camera, alarmed.has(name), !!stop)}`} />
-                  <span className="whitespace-nowrap rounded bg-bg-0/85 px-1.5 py-[1px] text-[10.5px] font-semibold text-text-primary">
-                    {name}{stop ? ` · ${clock(stop.time)}` : ""}
-                  </span>
-                </button>
-              );
-            })}
+            {placedNames.map((name) => (
+              <CameraMarker
+                key={name}
+                name={name}
+                x={positions[name][0]}
+                y={positions[name][1]}
+                camera={byName.get(name)}
+                alarmed={alarmed.has(name)}
+                stop={lastStopByCamera.get(name)}
+                canEdit={canEdit}
+                onDragStart={startDrag}
+                onDragMove={moveDrag}
+                onDragEnd={endDrag}
+              />
+            ))}
 
             <IntrusionDemo />
           </div>

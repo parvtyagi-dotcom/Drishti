@@ -31,12 +31,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-# Google sign-in for the demo ("Drishti Login" project). A client ID is
-# public - it ships in the frontend bundle - so defaulting it here is safe.
-# Set GOOGLE_CLIENT_ID= (empty) to start without sign-in.
-os.environ.setdefault(
-    "GOOGLE_CLIENT_ID", "989388168434-828tilr4ac5pp3qirvjou30iag4didca.apps.googleusercontent.com"
-)
+# Google sign-in is opt-in: set GOOGLE_CLIENT_ID (and GOOGLE_ALLOWED_EMAILS or
+# GOOGLE_ALLOWED_DOMAINS) to enable it. It used to default to a hard-coded
+# demo client ID, which made the server report "already configured" on a
+# fresh install - hiding the create-the-first-administrator screen while the
+# dashboard showed no Google button, so nobody could sign in at all.
 
 import uvicorn  # noqa: E402
 

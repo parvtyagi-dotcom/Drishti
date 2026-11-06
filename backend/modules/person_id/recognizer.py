@@ -90,10 +90,14 @@ def best_face_recognizer(sface_path: str | Path, arcface_path: str | Path):
             return ArcFaceRecognizer(arcface_path)
         except Exception:
             logger.exception("ArcFace failed to load; using SFace")
+    else:
+        logger.info("ArcFace model not found at %s; using SFace (run scripts/download_face_model.py "
+                    "for the stronger recognizer)", arcface_path)
     return FaceRecognizer(sface_path)
 
 
 _ROTATIONS = (None, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE)
+FACE_ROTATIONS = _ROTATIONS  # public name for the other person_id modules
 
 
 REFERENCE_MAX_SIDE = 1280
@@ -106,20 +110,34 @@ def upright_face(image: np.ndarray, detector: FaceDetector) -> tuple[np.ndarray,
     lost on the way), and the face detector only finds upright faces. Returns
     the image the face was found in, so it can be embedded and kept upright.
     """
+    turned, face, _ = upright_face_with_rotation(image, detector)
+    return turned, face
+
+
+def is_upright(face: FaceDetection) -> bool:
+    """Level eyes above the mouth (YuNet landmarks)."""
+    r = face.raw
+    return bool(abs(r[6] - r[4]) > abs(r[7] - r[5]) and (r[11] + r[13]) / 2 > (r[5] + r[7]) / 2)
+
+
+def upright_face_with_rotation(
+    image: np.ndarray, detector: FaceDetector, rotations=_ROTATIONS,
+) -> tuple[np.ndarray, FaceDetection | None, int | None]:
+    """upright_face, also reporting which cv2 rotation code (None for the
+    image as given) the face was found at - needed to map the face box back
+    onto the unrotated image."""
     # The detector also finds tilted and even upside-down faces, just with a
     # lower score - so every orientation is tried and the most confident face
     # with level eyes above the mouth wins.
-    best, best_key = (image, None), None
-    for rotation in _ROTATIONS:
+    best, best_key = (image, None, None), None
+    for rotation in rotations:
         turned = image if rotation is None else cv2.rotate(image, rotation)
         face = detector.best(turned)
         if face is None:
             continue
-        r = face.raw
-        upright = abs(r[6] - r[4]) > abs(r[7] - r[5]) and (r[11] + r[13]) / 2 > (r[5] + r[7]) / 2
-        key = (upright, float(r[14]))
+        key = (is_upright(face), float(face.raw[14]))
         if best_key is None or key > best_key:
-            best, best_key = (turned, face), key
+            best, best_key = (turned, face, rotation), key
     return best
 
 

@@ -311,12 +311,12 @@
     if (ev.evidence_bundle) {
       img.onload = () => { img.className = "show"; };
       img.onerror = () => { img.className = ""; };
-      img.src = base + "/snapshot.jpg";
+      img.src = keyed(base + "/snapshot.jpg");
     }
     brief.innerHTML = '<div class="who">AI brief</div><span>Writing…</span>';
     let tries = 0;
     const poll = () => {
-      fetch(base + "/brief").then((r) => r.ok ? r.json() : { status: "gone" }).then((b) => {
+      fetch(keyed(base + "/brief")).then((r) => r.ok ? r.json() : { status: "gone" }).then((b) => {
         const body = brief.querySelector("span");
         if (!body) return;
         if (b.status === "ready" || b.status === "template") {
@@ -411,11 +411,18 @@
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
   }
 
+  // --- pairing ------------------------------------------------------------
+  // The QR link carries ?key=; a home-screen launch drops the query, so keep it.
+  const PAIR_KEY = "drishti-siren-key";
+  let pairKey = new URLSearchParams(location.search).get("key") || "";
+  try { if (pairKey) localStorage.setItem(PAIR_KEY, pairKey); else pairKey = localStorage.getItem(PAIR_KEY) || ""; } catch (_) {}
+  const keyed = (url) => pairKey ? url + (url.includes("?") ? "&" : "?") + "key=" + encodeURIComponent(pairKey) : url;
+
   // --- event feed -----------------------------------------------------------
   let backfilling = true;
   function connect() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(proto + "//" + location.host + "/api/live/ws/events");
+    const ws = new WebSocket(keyed(proto + "//" + location.host + "/api/live/ws/events"));
 
     ws.onopen = () => {
       $("dot").classList.add("up");

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CalendarClock, Info, Loader2, MapPin, Satellite, Search } from "lucide-react";
 import { Panel } from "../components/common/Panel";
 import { ApiError } from "../api/client";
@@ -212,34 +212,65 @@ export function SatelliteCheck() {
   const [split, setSplit] = useState(50);
   const [selected, setSelected] = useState<number | null>(null);
 
-  function loadPairs(select?: string) {
-    satelliteApi.pairs()
-      .then((r) => { setPairs(r.pairs); setPairId(select ?? r.pairs[0]?.id ?? ""); })
-      .catch((err) => { setPairs([]); setError(err instanceof ApiError ? err.message : "Could not load saved pairs."); });
-  }
+  // Monotonic tokens: a response only lands if no newer request has started
+  // since, so a slow earlier answer never overwrites the current selection.
+  const pairsReq = useRef(0);
+  const selectReq = useRef(0);
 
-  useEffect(() => loadPairs(), []);
+  const loadPairs = useCallback((select?: string) => {
+    const token = ++pairsReq.current;
+    satelliteApi.pairs()
+      .then((r) => {
+        if (token !== pairsReq.current) return;
+        setPairs(r.pairs);
+        setPairId(select ?? r.pairs[0]?.id ?? "");
+      })
+      .catch((err) => {
+        if (token !== pairsReq.current) return;
+        setPairs([]);
+        setError(err instanceof ApiError ? err.message : "Could not load saved pairs.");
+      });
+  }, []);
 
   useEffect(() => {
-    if (!pairId) return;
-    setResult(null);
-    setSelected(null);
-    setError(null);
-    satelliteApi.lastCheck(pairId).then(setResult).catch(() => void run(pairId));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pairId]);
+    const tickets = pairsReq;
+    loadPairs();
+    return () => { tickets.current++; };
+  }, [loadPairs]);
 
-  async function run(id: string) {
+  const run = useCallback(async (id: string) => {
+    const token = ++selectReq.current;
     setBusy(true);
     setError(null);
     try {
-      setResult(await satelliteApi.check(id));
+      const r = await satelliteApi.check(id);
+      if (token === selectReq.current) setResult(r);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "The check failed.");
+      if (token === selectReq.current) setError(err instanceof ApiError ? err.message : "The check failed.");
     } finally {
-      setBusy(false);
+      if (token === selectReq.current) setBusy(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    if (!pairId) return;
+    const tickets = selectReq;
+    const token = ++tickets.current;
+    setResult(null);
+    setSelected(null);
+    setError(null);
+    setBusy(false);
+    satelliteApi.lastCheck(pairId)
+      .then((r) => { if (token === selectReq.current) setResult(r); })
+      .catch((err) => {
+        if (token !== selectReq.current) return;
+        // Only "no saved check yet" (404) justifies the heavy run; anything
+        // else (network, server error) is shown rather than silently retried.
+        if (err instanceof ApiError && err.status === 404) void run(pairId);
+        else setError(err instanceof ApiError ? err.message : "Could not load the last check.");
+      });
+    return () => { tickets.current++; };
+  }, [pairId, run]);
 
   const pair = pairs?.find((p) => p.id === pairId);
   const ready = result && result.pair_id === pairId ? result : null;

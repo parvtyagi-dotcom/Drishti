@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { LiveEvent } from "../api/live";
 
 const MAX_EVENTS = 200;
@@ -12,15 +12,27 @@ export interface LiveEventStream {
   clearAlarm: () => void;
 }
 
+export const LiveEventsContext = createContext<LiveEventStream | null>(null);
+
 /**
- * Subscribes to the backend's live event websocket.
+ * Reads the shared live event stream. The single websocket is owned by
+ * LiveEventsProvider (mounted once in App), so every consumer shares it.
+ */
+export function useLiveEvents(): LiveEventStream {
+  const stream = useContext(LiveEventsContext);
+  if (!stream) throw new Error("useLiveEvents must be used inside <LiveEventsProvider>");
+  return stream;
+}
+
+/**
+ * Opens the backend's live event websocket. Call this once, from the provider.
  *
  * The socket reconnects on its own: an operator dashboard left open all shift
  * must not go quietly deaf because the backend restarted once. Events are
  * capped in memory because a live feed has no end - the full history lives
  * server-side, this is only what the panel needs to render.
  */
-export function useLiveEvents(): LiveEventStream {
+export function useLiveEventsSocket(): LiveEventStream {
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [latestAlarm, setLatestAlarm] = useState<LiveEvent | null>(null);
@@ -55,8 +67,8 @@ export function useLiveEvents(): LiveEventStream {
       };
 
       ws.onclose = () => {
-        setConnected(false);
         if (closedByUs.current) return;
+        setConnected(false);
         timerRef.current = window.setTimeout(connect, RECONNECT_DELAY_MS);
       };
 
@@ -68,9 +80,20 @@ export function useLiveEvents(): LiveEventStream {
     return () => {
       closedByUs.current = true;
       if (timerRef.current) window.clearTimeout(timerRef.current);
-      socketRef.current?.close();
+      const ws = socketRef.current;
+      if (ws) {
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.onmessage = null;
+        ws.close();
+      }
     };
   }, []);
 
-  return { events, connected, latestAlarm, clearAlarm: () => setLatestAlarm(null) };
+  const clearAlarm = useCallback(() => setLatestAlarm(null), []);
+
+  return useMemo(
+    () => ({ events, connected, latestAlarm, clearAlarm }),
+    [events, connected, latestAlarm, clearAlarm],
+  );
 }

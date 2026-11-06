@@ -42,6 +42,10 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+# fast-plate-ocr pulls in opencv-python-headless, which overwrites the same
+# cv2 package as opencv-python. Keep exactly one OpenCV:
+python -m pip uninstall -y opencv-python-headless
+python -m pip install --force-reinstall --no-deps opencv-python==4.10.0.84
 npm --prefix frontend ci
 npm --prefix frontend run build
 python scripts/serve.py
@@ -50,7 +54,20 @@ python scripts/serve.py
 On macOS or Linux, activate the environment with
 `source .venv/bin/activate`. Open <http://127.0.0.1:8000> in a browser. The
 first-run flow asks you to create an administrator account; there is no
-default password.
+default password. Sign-in is always on; `DRISHTI_NO_LOGIN=1` turns it off for
+a single-machine development setup only.
+
+Phones and devices that cannot sign in (the siren, a phone used as a camera,
+a talk-down speaker) pair by scanning the QR code on the **Devices** page,
+which carries a device key. An Android siren APK built before pairing keys
+cannot send one; rebuild it from `siren-app/`, or set `DRISHTI_OPEN_DEVICES=1`
+temporarily to let unpaired devices connect.
+
+Environment switches that loosen security, all off by default:
+`DRISHTI_NO_LOGIN`, `DRISHTI_OPEN_DEVICES`, `DRISHTI_API_DOCS` (serves
+`/docs`), `BORDERWATCH_DISABLE_AUTH` (tests only). Google sign-in requires
+`GOOGLE_ALLOWED_EMAILS` or `GOOGLE_ALLOWED_DOMAINS`, and new Google users are
+read-only `AUDITOR`s unless `GOOGLE_DEFAULT_ROLE` says otherwise.
 
 For phone-camera access, browsers require HTTPS. The development certificate
 helper is `scripts/make_dev_cert.py`; use certificates only for local testing.
@@ -58,12 +75,13 @@ The Android siren client also uses the local network service.
 
 ## Model and test assets
 
-Large third-party model weights, reference photos, and recorded demo footage
-are intentionally not included in this repository. This avoids publishing
-biometric/sample media and redistributing model binaries without their
-licenses. Obtain model files from their upstream sources, review the
-applicable terms, and place the required files in the `models/` directory.
-Use your own properly authorized images and recordings for testing.
+The repository currently tracks the model weights in `models/` and the test
+fixtures in `uploads/` and `references/` (the test suite runs against them).
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for each model's licence -
+note that the Ultralytics YOLO weights are AGPL-3.0 - and for the consent
+question the recorded fixtures raise. The OpenH264 DLL and the siren APK are
+not tracked; that file explains how to obtain or build them. Use your own
+properly authorized images and recordings for anything beyond the tests.
 
 The application does not include demo camera footage. Configure a camera or
 provide a local video through the application before starting an analysis.

@@ -90,6 +90,17 @@ class TargetLock:
             return TargetLockState.TRACKING
         return TargetLockState.TEMPORARILY_LOST
 
+    def candidate_count(self, track_id: int) -> int:
+        """Matches registered for track_id so far. Read-only: match_counts is
+        a defaultdict, and indexing it directly would insert the track."""
+        return self.match_counts.get(track_id, 0)
+
+    def candidates(self) -> dict[int, int]:
+        """A copy of every track with at least one registered match - what an
+        overlay needs to show who is accumulating evidence before (or
+        besides) confirmation. Changing the copy changes nothing here."""
+        return {tid: n for tid, n in self.match_counts.items() if n > 0}
+
     def end(self) -> None:
         """Marks the lock as finished (video ended / job cancelled) -- purely
         a terminal marker for reporting, doesn't affect confirm/track/lost

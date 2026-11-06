@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 
 export type AsyncState<T> =
@@ -13,10 +13,25 @@ export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = []): Asyn
   const [state, setState] = useState<AsyncState<T>>({ status: "loading" });
   const [tick, setTick] = useState(0);
 
-  const load = useCallback(() => {
+  // The latest fetcher lives in a ref so the effect need not list it (callers
+  // pass a fresh closure every render); `deps` decide when to refetch.
+  const fetcherRef = useRef(fetcher);
+  useEffect(() => {
+    fetcherRef.current = fetcher;
+  });
+
+  // Collapse the caller's deps array into a version number that only changes
+  // when an element changes, giving the effect a static dependency list.
+  const [tracked, setTracked] = useState({ deps, version: 0 });
+  if (tracked.deps.length !== deps.length || tracked.deps.some((d, i) => !Object.is(d, deps[i]))) {
+    setTracked({ deps, version: tracked.version + 1 });
+  }
+  const depsVersion = tracked.version;
+
+  useEffect(() => {
     let cancelled = false;
     setState({ status: "loading" });
-    fetcher()
+    fetcherRef.current()
       .then((data) => {
         if (!cancelled) setState({ status: "success", data });
       })
@@ -28,10 +43,9 @@ export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = []): Asyn
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, tick]);
+  }, [depsVersion, tick]);
 
-  useEffect(() => load(), [load]);
+  const refetch = useCallback(() => setTick((t) => t + 1), []);
 
-  return { ...state, refetch: () => setTick((t) => t + 1) };
+  return { ...state, refetch };
 }

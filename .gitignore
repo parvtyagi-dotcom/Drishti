@@ -18,7 +18,7 @@ siren-app/android/.idea/
 dist/
 
 # Runtime data and generated evidence
-jobs/
+/jobs/
 outputs/
 zones/
 data/
@@ -38,3 +38,7 @@ pylibs/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Test coverage data
+.coverage
+coverage.json

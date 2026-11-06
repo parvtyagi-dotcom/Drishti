@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Route, Routes } from "react-router-dom";
+import { LiveEventsProvider } from "./components/layout/LiveEventsProvider";
 import { AppLayout } from "./components/layout/AppLayout";
+import { UNAUTHORIZED_EVENT } from "./api/client";
 import { authApi, type SessionState } from "./api/auth";
 import { Analysis } from "./pages/Analysis";
 import { AnprSearch } from "./pages/AnprSearch";
@@ -37,6 +39,14 @@ export default function App() {
     void refreshSession();
   }, [refreshSession]);
 
+  // A 401 from any non-auth call means the session expired: show the sign-in
+  // screen (the app is gated on `session.authenticated`, there is no /login route).
+  useEffect(() => {
+    const onUnauthorized = () => void refreshSession();
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+  }, [refreshSession]);
+
   if (session === null) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-bg-0 text-[13px] text-text-tertiary">
@@ -52,6 +62,7 @@ export default function App() {
   }
 
   return (
+    <LiveEventsProvider>
     <AppLayout user={session.user} onSignedOut={() => void refreshSession()}>
       <Routes>
         <Route path="/" element={<Dashboard />} />
@@ -72,5 +83,6 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
       </Routes>
     </AppLayout>
+    </LiveEventsProvider>
   );
 }

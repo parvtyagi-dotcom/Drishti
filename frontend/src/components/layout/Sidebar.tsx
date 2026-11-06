@@ -160,7 +160,7 @@ export function Sidebar({ user, onSignedOut }: { user?: SessionUser | null; onSi
           href={SIREN_URL}
           data-tip="Siren Panel"
           target="_blank"
-          rel="noreferrer"
+          rel="noopener noreferrer"
           className={`relative flex h-9 shrink-0 items-center gap-3 rounded-[10px] text-[13px] font-medium text-text-secondary hover:bg-white/[0.06] hover:text-text-primary ${expanded ? "px-3" : "w-10 justify-center"}`}
         >
           <Siren size={17} strokeWidth={1.9} className="shrink-0" />

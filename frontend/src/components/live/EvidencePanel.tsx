@@ -165,7 +165,7 @@ export function EvidencePanel() {
                 <a
                   href={evidenceAssetUrl(open, "snapshot.jpg")}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   className="rounded border border-border-2 px-2.5 py-1.5 text-text-secondary hover:bg-bg-3 hover:text-text-primary"
                 >
                   Open snapshot
@@ -173,7 +173,7 @@ export function EvidencePanel() {
                 <a
                   href={`/api/live/evidence/${open.camera_id}/${open.bundle_id}/event.json`}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   className="rounded border border-border-2 px-2.5 py-1.5 text-text-secondary hover:bg-bg-3 hover:text-text-primary"
                 >
                   Event record (JSON)

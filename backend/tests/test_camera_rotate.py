@@ -43,7 +43,10 @@ def test_unknown_rotation_is_ignored():
     assert LiveStreamReader("0", rotate=45).rotate == 0
 
 
-def test_rotate_endpoint_sets_rotation_and_rejects_odd_angles(tmp_path):
+def test_rotate_endpoint_sets_rotation_and_rejects_odd_angles(tmp_path, monkeypatch):
+    # A file camera must live under uploads/ (backend.live.source_policy).
+    from backend.live import source_policy
+    monkeypatch.setattr(source_policy, "UPLOADS_DIR", tmp_path)
     clip = tmp_path / "cam.mp4"
     _clip(clip)
     created = client.post("/api/live/cameras", json={"name": "T", "source": str(clip), "start": False}).json()

@@ -57,7 +57,9 @@
 <script>
 (() => {
   const $ = (x) => document.getElementById(x);
-  const camera = new URLSearchParams(location.search).get("camera") || "";
+  const params = new URLSearchParams(location.search);
+  const camera = params.get("camera") || "";
+  const pairKey = params.get("key") || "";
   $("cam").textContent = camera || "No camera chosen";
   if (!camera) {
     $("sub").textContent = "Open this page from the Speaker link on the Live Monitor, so it knows which camera it serves.";
@@ -138,7 +140,7 @@
 
   function connect() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${location.host}/api/live/ws/speaker?camera=${encodeURIComponent(camera)}`);
+    const ws = new WebSocket(`${proto}//${location.host}/api/live/ws/speaker?camera=${encodeURIComponent(camera)}&key=${encodeURIComponent(pairKey)}`);
     ws.onmessage = (m) => {
       const msg = JSON.parse(m.data);
       if (msg.type === "ready") {

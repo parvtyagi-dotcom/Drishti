@@ -61,7 +61,7 @@ export function AuditLog() {
         <a
           href="/api/live/handover?hours=12"
           target="_blank"
-          rel="noreferrer"
+          rel="noopener noreferrer"
           className="inline-flex items-center gap-1.5 rounded border border-border-2 bg-bg-2 px-3 py-2 text-[12px] font-semibold text-text-secondary hover:bg-bg-3 hover:text-text-primary"
         >
           <FileText size={13} /> Shift handover (last 12 h)

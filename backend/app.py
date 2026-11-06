@@ -19,7 +19,9 @@ import contextlib
 import dataclasses
 import logging
 import os
+import shutil
 from pathlib import Path
+from urllib.parse import unquote
 
 import cv2
 from fastapi import FastAPI, HTTPException, Request, UploadFile
@@ -30,10 +32,13 @@ from backend.agent.models import build_chain
 from backend.agent.service import AgentService
 from backend.api.agent import router as agent_router
 from backend.api.agent import set_service as set_agent_service
-from backend.api.auth import _token_from, decode_token, google_client_id, has_users, is_public_path, no_login
+from backend.api.auth import (
+    ADMIN, OPERATOR, _token_from, decode_token, google_client_id, has_users, is_public_path, no_login,
+)
 from backend.api.auth_routes import router as auth_router
 from backend.api.jobs import job_manager
 from backend.api.live import router as live_router
+from backend.api.live_devices import router as live_devices_router
 from backend.api.handover import router as handover_router
 from backend.api.map_routes import router as map_router
 from backend.api.onvif_routes import router as onvif_router
@@ -44,7 +49,7 @@ from backend.api.sensor_routes import router as sensor_router
 from backend.api.sensor_routes import warm_up as warm_up_sensors
 from backend.api.talkdown_routes import router as talkdown_router
 from backend.api.siren_routes import router as siren_router
-from backend.api import search_routes
+from backend.api import device_auth, search_routes
 from backend.api.feedback_routes import router as feedback_router
 from backend.api.satellite_routes import router as satellite_router
 from backend.api.talkdown_routes import talkdown
@@ -56,7 +61,7 @@ from backend.api.schemas import (
 )
 from backend.api.storage import (
     NotFoundError, find_reference_photos, find_video_path, load_zone, new_id,
-    save_reference_photos, save_uploaded_video, save_zone,
+    UploadTooLargeError, save_reference_photos, save_uploaded_video, save_zone,
 )
 from backend.core.events import severity_for, should_alarm
 from backend.config import (
@@ -114,9 +119,19 @@ async def lifespan(app: FastAPI):
     camera_manager.stop_all()
 
 
-app = FastAPI(title="Drishti API", lifespan=lifespan)
+# The interactive API docs list every endpoint and its parameters to anyone,
+# without a login (they are not under /api/). Useful while developing; off by
+# default on anything deployed. DRISHTI_API_DOCS=1 turns them back on.
+_API_DOCS = os.environ.get("DRISHTI_API_DOCS") == "1"
+app = FastAPI(
+    title="Drishti API", lifespan=lifespan,
+    docs_url="/docs" if _API_DOCS else None,
+    redoc_url="/redoc" if _API_DOCS else None,
+    openapi_url="/openapi.json" if _API_DOCS else None,
+)
 app.include_router(auth_router)
 app.include_router(live_router)
+app.include_router(live_devices_router)
 app.include_router(onvif_router)
 app.include_router(webcam_router)
 app.include_router(map_router)
@@ -129,7 +144,39 @@ app.include_router(search_routes.router)
 app.include_router(feedback_router)
 app.include_router(satellite_router)
 app.middleware("http")(ownership_middleware)
+device_auth.install_log_redaction()
 
+
+@app.middleware("http")
+async def no_referrer(request: Request, call_next):
+    """Device pages carry their pairing key in the URL. Without this, any link
+    or resource those pages load would receive the key in its Referer."""
+    response = await call_next(request)
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
+
+
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# Writes any signed-in role may make: ending your own session.
+_ANY_ROLE_WRITES = frozenset({"/api/auth/logout"})
+
+
+def role_denial(role: str, method: str, path: str) -> str | None:
+    """Why this role may not make this request, or None if it may.
+
+    Enforced here for the same fail-closed reason as the session check: most
+    routes never declared a role at all, so an AUDITOR - read-only by design -
+    could add, reconfigure and stop cameras. Per-route require_role checks
+    still apply on top of this for anything stricter.
+    """
+    if method in _SAFE_METHODS or path in _ANY_ROLE_WRITES:
+        return None
+    if role not in (ADMIN, OPERATOR):
+        return f"your role ({role}) is read-only"
+    if method == "DELETE" and role != ADMIN:
+        return "only an administrator can delete"
+    return None
 
 
 @app.middleware("http")
@@ -155,7 +202,11 @@ async def require_authentication(request: Request, call_next):
         return await call_next(request)
 
     token = _token_from(request)
-    if token is not None and decode_token(token) is not None:
+    user = decode_token(token) if token is not None else None
+    if user is not None:
+        denial = role_denial(user.role, request.method, path)
+        if denial is not None:
+            return JSONResponse({"detail": denial}, status_code=403)
         return await call_next(request)
     if not has_users() and not google_client_id():
         return JSONResponse(
@@ -187,11 +238,17 @@ def _job_status_out(job) -> JobStatusOut:
 # --- videos -----------------------------------------------------------------
 
 @app.post("/api/videos", response_model=VideoUploadOut)
-async def upload_video(file: UploadFile):
-    data = await file.read()
-    if not data:
+def upload_video(file: UploadFile):
+    # A plain (sync) handler on purpose: FastAPI runs it on a worker thread,
+    # so copying a multi-GB file and opening it with OpenCV no longer stalls
+    # the event loop that also carries every live feed and websocket.
+    try:
+        video_id, path = save_uploaded_video(file.filename or "upload.mp4", file.file)
+    except UploadTooLargeError as exc:
+        raise HTTPException(413, f"video rejected: {exc}")
+    if path.stat().st_size == 0:
+        path.unlink(missing_ok=True)
         raise HTTPException(400, "uploaded file is empty")
-    video_id, path = save_uploaded_video(file.filename or "upload.mp4", data)
     try:
         with VideoReader(path) as reader:
             info = reader.info
@@ -220,15 +277,21 @@ def get_representative_frame(video_id: str, at: float = 0.5):
 # --- reference photos (Target Person ID) -------------------------------------
 
 @app.post("/api/references", response_model=ReferenceUploadOut)
-async def upload_references(files: list[UploadFile]):
+def upload_references(files: list[UploadFile]):
+    # Sync for the same reason as upload_video: face detection on each photo
+    # is CPU work that must not run on the event loop.
     if not files:
         raise HTTPException(400, "at least one reference photo is required")
     if len(files) > 6:
         raise HTTPException(400, "at most 6 reference photos are supported")
-    payload = [(f.filename or "ref.jpg", await f.read()) for f in files]
-    if any(not data for _, data in payload):
+    payload = [(f.filename or "ref.jpg", f.file) for f in files]
+    try:
+        ref_id, paths = save_reference_photos(payload)
+    except UploadTooLargeError as exc:
+        raise HTTPException(413, f"photo rejected: {exc}")
+    if any(p.stat().st_size == 0 for p in paths):
+        shutil.rmtree(paths[0].parent, ignore_errors=True)
         raise HTTPException(400, "one or more uploaded reference photos were empty")
-    ref_id, paths = save_reference_photos(payload)
     # Check the faces now: a set with no usable face would otherwise only fail
     # once a camera starts matching against it. Sideways photos are turned
     # upright on disk so every later use sees the face the right way up.
@@ -506,6 +569,23 @@ def system_status():
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
+
+def _dashboard_asset(dist: Path, full_path: str) -> Path | None:
+    """The built file at full_path, or None - never anything outside dist.
+
+    This route answers without a login (it is not under /api/), and it used
+    to join the request path straight onto the build folder. A request for
+    "../data/session-secret" resolved to the signing key, which is enough to
+    mint an administrator session.
+    """
+    if not full_path:
+        return None
+    root = dist.resolve()
+    candidate = (root / unquote(full_path)).resolve()
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        return None
+    return candidate
+
 if FRONTEND_DIST.is_dir():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
 
@@ -519,8 +599,8 @@ if FRONTEND_DIST.is_dir():
         """
         if full_path.startswith("api/"):
             raise HTTPException(404, "not found")
-        asset = FRONTEND_DIST / full_path
-        if full_path and asset.is_file():
+        asset = _dashboard_asset(FRONTEND_DIST, full_path)
+        if asset is not None:
             return FileResponse(asset)
         # The shell names the current build's hashed bundle, so it must never
         # be cached: a browser holding an old copy keeps showing the old

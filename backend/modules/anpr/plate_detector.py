@@ -15,10 +15,24 @@ of it was reading "SARGOSE"/"ZAR6O6L" instead of real plates).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
+# Fallback warnings already logged by this process: a camera restart or a
+# new job builds a new PlateDetector, and the same warning every time would
+# drown the log without saying anything new.
+_WARNED: set[str] = set()
+
+
+def _warn_once(key: str, message: str, *args) -> None:
+    if key in _WARNED:
+        return
+    _WARNED.add(key)
+    logger.warning(message, *args)
 
 
 @dataclass
@@ -138,7 +152,15 @@ class PlateDetector:
     def _build_neural():
         try:
             return _NeuralPlateDetector()
-        except Exception:
+        except Exception as exc:
+            # Falling back silently made ANPR look broken: the classical
+            # detector boxes bumpers and grilles, and nothing said why.
+            _warn_once(
+                "neural_detector",
+                "ANPR: neural plate detector (open-image-models) failed to load (%s: %s); "
+                "using the much less accurate classical contour detector",
+                type(exc).__name__, exc,
+            )
             return None
 
     # The neural detector boxes plates tightly, often shaving the last

@@ -71,7 +71,7 @@
          compiled in, so a server whose IP changes does not need a new build. -->
     <div id="setup" class="field" hidden>
       <div class="state">Connect to Drishti</div>
-      <label for="host">Server address shown on the dashboard's Connect Device page</label>
+      <label for="host">Siren link from the dashboard's Devices page (or the server address)</label>
       <input id="host" inputmode="url" autocapitalize="off" autocorrect="off"
              placeholder="192.168.0.166:8000">
       <button class="primary" id="saveHost">Connect</button>
@@ -107,6 +107,9 @@
   const $ = (id) => document.getElementById(id);
   const ALARM_SECONDS = 15;
   const STORE_KEY = "borderwatch.server";
+  // Pairing key from the siren link (?key=...). The server refuses the event
+  // feed without it once sign-in is on.
+  const PAIR_STORE_KEY = "borderwatch.siren-key";
 
   let audio = null, armed = false, alarmTimer = null, osc = null, gain = null;
   let ws = null, retry = null, backfilling = true, server = null;
@@ -230,7 +233,7 @@
 
   function normalise(input) {
     let value = String(input || "").trim().replace(/\/+$/, "");
-    value = value.replace(/^https?:\/\//i, "");
+    value = value.replace(/^https?:\/\//i, "").replace(/[/?#].*$/, "");
     if (!value) return null;
     // Default to the plain-HTTP port: a self-signed certificate cannot be
     // accepted from inside a native app the way a browser lets you accept it,
@@ -262,7 +265,8 @@
         }
       });
 
-    const url = "ws://" + server + "/api/live/ws/events";
+    const pairKey = read(PAIR_STORE_KEY) || "";
+    const url = "ws://" + server + "/api/live/ws/events" + (pairKey ? "?key=" + encodeURIComponent(pairKey) : "");
     try {
       ws = new WebSocket(url);
     } catch (err) {
@@ -318,7 +322,10 @@
   }
 
   $("saveHost").addEventListener("click", () => {
-    const value = normalise($("host").value);
+    const raw = $("host").value;
+    const keyMatch = String(raw || "").match(/[?&]key=([0-9a-f]+)/i);
+    if (keyMatch) write(PAIR_STORE_KEY, keyMatch[1]);
+    const value = normalise(raw);
     if (!value) { $("setupHint").textContent = "Enter the address, for example 192.168.0.166:8000"; return; }
     server = value;
     write(STORE_KEY, server);

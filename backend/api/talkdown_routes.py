@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from backend.api import device_auth
 from backend.api.auth import ADMIN, OPERATOR, User, require_role
 from backend.live.camera_manager import camera_manager
 from backend.live.talkdown import TalkDown
@@ -69,6 +70,8 @@ def warn_now(camera_id: str, user: User = CAN_WARN) -> dict:
 
 @router.websocket("/ws/speaker")
 async def speaker_websocket(websocket: WebSocket, camera: str = ""):
+    if not await device_auth.authorize_websocket(websocket, device_scope=device_auth.SPEAKER):
+        return
     await websocket.accept()
     session = camera_manager.find_by_name(camera) if camera else None
     if session is None:

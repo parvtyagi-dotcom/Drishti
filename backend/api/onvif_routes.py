@@ -23,6 +23,7 @@ from backend.api.network import lan_addresses
 from backend.core.video import DEFAULT_MAX_ANALYSIS_WIDTH
 from backend.live.camera_manager import camera_manager
 from backend.live.onvif import OnvifCamera, OnvifError, discover
+from backend.live.source_policy import validate_camera_source
 
 router = APIRouter(prefix="/api/live/onvif", tags=["live"])
 
@@ -79,6 +80,12 @@ def add(req: AddOnvifCamera, _: User = CAN_ADD) -> dict:
         source = _camera(req).stream_uri(req.profile_token)
     except OnvifError as exc:
         raise HTTPException(502, str(exc)) from exc
+    # The stream address comes from the device, not the operator: a rogue or
+    # spoofed "camera" could otherwise hand back file:// or a metadata URL.
+    try:
+        validate_camera_source(source)
+    except ValueError as exc:
+        raise HTTPException(502, f"camera returned an unusable stream address: {exc}") from exc
     camera = camera_manager.add(name=req.name, source=source, location=req.location, max_width=req.max_width)
     session = camera_manager.get(camera.camera_id)
     session.start()

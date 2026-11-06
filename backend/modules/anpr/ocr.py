@@ -12,6 +12,7 @@ cloud OCR, everything stays offline after the one-time model download.
 """
 from __future__ import annotations
 
+import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,17 @@ import cv2
 import numpy as np
 
 from backend.modules.anpr.normalize import clean_plate_text
+
+logger = logging.getLogger(__name__)
+# Warnings already logged by this process - see plate_detector._WARNED.
+_WARNED: set[str] = set()
+
+
+def _warn_once(key: str, message: str, *args) -> None:
+    if key in _WARNED:
+        return
+    _WARNED.add(key)
+    logger.warning(message, *args)
 
 try:
     import pytesseract
@@ -249,12 +261,25 @@ class PlateOcr:
         if self._impl is None:
             self._impl = _TesseractBackend()
         self.status = self._impl.status
+        if not self._impl.available:
+            # Without this ANPR runs, finds vehicles and plates, and reads
+            # nothing - with no hint anywhere that OCR never started.
+            _warn_once(
+                "ocr_unavailable",
+                "ANPR: no OCR backend available (%s); plates will be located but never read",
+                self.status.reason,
+            )
 
     @staticmethod
     def _build_fast_plate_ocr():
         try:
             return _FastPlateOcrBackend()
-        except Exception:
+        except Exception as exc:
+            _warn_once(
+                "fast_plate_ocr",
+                "ANPR: fast-plate-ocr failed to load (%s: %s); falling back to Tesseract",
+                type(exc).__name__, exc,
+            )
             return None
 
     @property

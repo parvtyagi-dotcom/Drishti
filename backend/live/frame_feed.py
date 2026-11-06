@@ -15,10 +15,16 @@ what is shown does.
 """
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from typing import Callable
 
 from backend.core.video import Frame
+
+logger = logging.getLogger("backend.live.frame_feed")
+
+_DISPLAY_ERROR_LOG_EVERY_SEC = 5.0
 
 
 class LiveFrameFeed:
@@ -33,6 +39,7 @@ class LiveFrameFeed:
         self._done = False
         self._error: BaseException | None = None
         self._thread: threading.Thread | None = None
+        self._last_display_error_log = float("-inf")
 
     def __getattr__(self, name):
         # info, metrics, status and the rest come from the real reader.
@@ -60,7 +67,12 @@ class LiveFrameFeed:
                 try:
                     self._on_frame(frame)
                 except Exception:  # a display failure must not stop the camera
-                    pass
+                    # ...but swallowing it silently is how a feed froze with
+                    # no trace of why. Log, at most once every few seconds.
+                    now = time.monotonic()
+                    if now - self._last_display_error_log >= _DISPLAY_ERROR_LOG_EVERY_SEC:
+                        self._last_display_error_log = now
+                        logger.exception("live display update failed")
         except BaseException as exc:
             self._error = exc
         finally:
