@@ -35,10 +35,11 @@ def test_candidates_is_a_copy():
 
 
 # ---------------------------------------------------------------- face boxes
-from backend.orchestrator import (  # noqa: E402
+from backend.modules.person_id.face_search import (  # noqa: E402
     _FaceOrientation, _VetoStreaks, _candidate_body_label, _face_box_style,
-    _face_bbox_in_crop, _face_veto_applies, _plate_box_style,
+    _face_bbox_in_crop, _face_veto_applies,
 )
+from backend.orchestrator_overlay import _plate_box_style  # noqa: E402
 
 
 @pytest.mark.parametrize("rotation", [None, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE])

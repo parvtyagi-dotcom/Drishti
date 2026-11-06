@@ -23,8 +23,10 @@ as-is by passing it the real target_track_id/zone_states from this run.
 """
 from __future__ import annotations
 
+import logging
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Callable
 
@@ -37,13 +39,10 @@ from backend.config import (
     YUNET_MODEL_PATH, SFACE_MODEL_PATH, ARCFACE_MODEL_PATH, ZoneConfig,
 )
 from backend.core.lowlight import process_frame as lowlight_process_frame
-from backend.core.output import (
-    CYAN, MAGENTA, ORANGE, OutputVideoWriter, RED, YELLOW, draw_banner, draw_polygon,
-    draw_target_box, draw_thin_box, format_timestamp,
-)
+from backend.core.output import OutputVideoWriter, draw_target_box
 from backend.core.target_lock import TargetLock
 from backend.core.tracker import ObjectTracker
-from backend.core.video import VideoInfo, VideoReader
+from backend.core.video import VideoReader
 from backend.modules.anpr.aggregator import PlateAggregator
 from backend.modules.anpr.ocr import PlateOcr, normalize_plate, plates_match
 from backend.modules.anpr.plate_detector import PlateDetector
@@ -54,29 +53,28 @@ from backend.modules.person_id.custom_tracker import PersonBotSortTracker
 from backend.modules.person_id.detector import FaceDetector
 from backend.modules.person_id.person_reid import PersonReID
 from backend.modules.person_id.pipeline import _bbox_min_side, _prediction_still_looks_like_target
-from backend.modules.person_id.face_search import (  # noqa: F401  (_find_face is imported by tests)
-    _FaceOrientation, _FaceSighting, _VetoStreaks, _candidate_body_label, _face_bbox_in_crop,
-    _face_box_style, _face_veto_applies, _find_face, _locate_face,
+from backend.modules.person_id.face_search import (
+    _FaceOrientation, _FaceSighting, _VetoStreaks, _face_veto_applies, _locate_face,
 )
 from backend.modules.person_id.recognizer import ReferenceSet, best_face_recognizer
 from backend.modules.person_id.target_gallery import TargetGallery
-from backend.modules.zone.geometry import Zone, centroid, denormalize_polygon, footpoint
-from backend.modules.zone.state import INSIDE, ZoneMonitor, anyone_near_zone
+from backend.modules.zone.geometry import centroid, denormalize_polygon, footpoint
+from backend.modules.zone.state import INSIDE, anyone_near_zone
+from backend.orchestrator_overlay import (
+    behavior_banner, class_name, draw_alert_boxes, draw_auto_plates,
+    draw_banners, draw_person_overlays, draw_zones, zone_banner,
+)
+from backend.orchestrator_report import (
+    anpr_target_summary, behavior_summary, detected_plates, drain_lock_events,
+    legibility_warning, lock_summary, lowlight_summary, save_evidence, zones_summary,
+)
+from backend.orchestrator_types import (
+    OrchestratorError, OrchestratorRequest, OrchestratorResult, enabled_modules, zone_monitors_for,
+)
 
-# Plate width below which OCR cannot reliably resolve characters. Measured on
-# real footage: a 42px plate read as "11" where the true plate had 7
-# characters. Industry guidance for ANPR sits around 100-150px of plate width.
-MIN_LEGIBLE_PLATE_WIDTH_PX = 100
+logger = logging.getLogger("backend.orchestrator")
 
-_BEHAVIOR_BANNER_COLOR = {
-    "LOITERING": ORANGE, "SUDDEN_DIRECTION_CHANGE": ORANGE,
-    "ABNORMAL_SPEED": ORANGE, "REPEATED_BACK_AND_FORTH": ORANGE,
-    "TARGET_BEHAVIOR_ALERT": (0, 0, 220),
-}
-_BEHAVIOR_LABEL = {
-    "LOITERING": "LOITERING", "SUDDEN_DIRECTION_CHANGE": "SUDDEN DIRECTION CHANGE",
-    "ABNORMAL_SPEED": "ABNORMAL SPEED", "REPEATED_BACK_AND_FORTH": "REPEATED PACING",
-}
+__all__ = ["CombinedPipeline", "OrchestratorError", "OrchestratorRequest", "OrchestratorResult"]
 
 
 def _pad_bbox(bbox: tuple[int, int, int, int], pad_frac: float, w: int, h: int) -> tuple[int, int, int, int]:
@@ -129,68 +127,6 @@ def _following(lock: TargetLock | None) -> bool:
 
 
 
-@dataclass
-class OrchestratorRequest:
-    enable_person_id: bool = False
-    reference_photo_paths: list[Path] = field(default_factory=list)
-    # Cross-camera appearance sharing. Both optional: a single-camera run
-    # behaves exactly as before when they are not supplied.
-    share_appearance: Callable[[object], None] | None = None
-    match_shared_appearance: Callable[[object], float] | None = None
-    person_id_config: PersonIDConfig | None = None
-    snapshot_path: Path | None = None
-
-    enable_anpr: bool = False
-    target_plate: str | None = None
-    anpr_config: AnprConfig | None = None
-
-    zones: list[Zone] = field(default_factory=list)
-    zone_config: ZoneConfig | None = None
-
-    enable_behavior: bool = False
-    behavior_config: BehaviorConfig | None = None
-
-    enable_lowlight: bool = False
-    # Fog mode (core/dehaze.py): clears haze before detection, only on frames
-    # that are actually foggy.
-    enable_dehaze: bool = False
-    lowlight_config: LowLightConfig | None = None
-
-    tracker_config: TrackerConfig | None = None
-    evidence_dir: Path | None = None
-
-    # Live only: called each frame with the clean image and what is in view,
-    # as (track_id, coco_class_id, bbox) tuples. Group counting and search
-    # crops read it; nothing in the analysis depends on it.
-    observe_tracks: Callable[[object, list[tuple[int, int, tuple[int, int, int, int]]]], None] | None = None
-    # Live only: a core.motion.MotionGate. When set, the detectors skip frames
-    # with no movement and nothing tracked. Forensic runs look at every frame.
-    motion_gate: object | None = None
-    # A core.calibration.GroundCalibration for this camera's view. When set,
-    # behaviour analytics works in metres on the ground (separate limits for
-    # people and vehicles) instead of pixels.
-    ground_calibration: object | None = None
-
-
-@dataclass
-class OrchestratorResult:
-    output_video_path: Path | None  # None for a live run, which produces no file
-    codec_used: str
-    browser_playable: bool
-    video_info: VideoInfo
-    metrics: dict
-    events: list[dict]
-    modules_run: list[str]
-    person_id: dict | None = None
-    anpr: dict | None = None
-    zones: list[dict] | None = None
-    behavior: dict | None = None
-    lowlight: dict | None = None
-    evidence_dir: Path | None = None
-
-
-class OrchestratorError(RuntimeError):
-    pass
 
 
 class CombinedPipeline:
@@ -238,39 +174,6 @@ class CombinedPipeline:
             ids.update(self.tracker_config.vehicle_class_ids)
         return tuple(sorted(ids)) if ids else None
 
-    def _draw_person_overlays(self, frame, lock: TargetLock, tracks_by_id: dict,
-                              face_sightings: dict, veto_streaks: "_VetoStreaks") -> None:
-        """What person ID is doing before - and besides - the red TARGET box:
-        a yellow CANDIDATE n/N body box on every track gathering face matches
-        while nothing is confirmed, and a thin box on each recently found
-        face (green MATCH for the target, yellow CANDIDATE, faint grey for
-        anyone else). Without these an operator saw nothing at all until
-        confirmation and reasonably concluded detection was broken."""
-        cfg = self.person_id_cfg
-        if not lock.confirmed:
-            for tid, count in lock.candidates().items():
-                track = tracks_by_id.get(tid)
-                if track is not None:
-                    draw_target_box(frame.image, track.bbox,
-                                    label=_candidate_body_label(count, cfg.confirmation_observations),
-                                    color=YELLOW, thickness=2)
-        veto_streaks.prune(frame.timestamp_sec)
-        for tid in list(face_sightings):
-            sighting = face_sightings[tid]
-            if frame.timestamp_sec - sighting.timestamp_sec > cfg.face_box_hold_sec:
-                # Stale: stop drawing it. Its veto streak has its own,
-                # longer window (see _VetoStreaks).
-                del face_sightings[tid]
-                continue
-            track = tracks_by_id.get(tid)
-            if track is None:
-                continue
-            color, label, thickness = _face_box_style(tid, sighting.similarity, lock)
-            tx1, ty1 = track.bbox[0], track.bbox[1]
-            rx1, ry1, rx2, ry2 = sighting.rel_bbox
-            draw_thin_box(frame.image, (tx1 + rx1, ty1 + ry1, tx1 + rx2, ty1 + ry2), color,
-                          label=label, thickness=thickness, label_below=True)
-
     def run(
         self,
         video_path: str | Path | None = None,
@@ -301,19 +204,7 @@ class CombinedPipeline:
         is precisely the difference Live Mode needed.
         """
         req = self.req
-        modules_run = []
-        if req.enable_person_id:
-            modules_run.append("person_id")
-        if req.enable_anpr:
-            modules_run.append("anpr")
-        if req.zones:
-            modules_run.append("zone")
-        if req.enable_behavior:
-            modules_run.append("behavior")
-        if req.enable_lowlight:
-            modules_run.append("lowlight")
-        if req.enable_dehaze:
-            modules_run.append("fog")
+        modules_run = enabled_modules(req)
         if not modules_run:
             raise OrchestratorError("at least one module must be enabled")
 
@@ -372,21 +263,7 @@ class CombinedPipeline:
                 )
 
         # --- zone state (multiple zones supported) ---
-        zone_monitors = [
-            ZoneMonitor(
-                z.zone_id,
-                entry_grace_frames=self.zone_cfg.entry_grace_frames,
-                exit_grace_frames=self.zone_cfg.exit_grace_frames,
-                track_absence_grace_frames=self.zone_cfg.track_absence_grace_frames,
-                dwell_threshold_sec=self.zone_cfg.dwell_threshold_sec,
-                approach_prediction_sec=self.zone_cfg.approach_prediction_sec,
-                approach_grace_frames=self.zone_cfg.approach_grace_frames,
-                approach_min_speed_px_per_sec=self.zone_cfg.approach_min_speed_px_per_sec,
-                approach_velocity_window_sec=self.zone_cfg.approach_velocity_window_sec,
-                approach_cooldown_sec=self.zone_cfg.approach_cooldown_sec,
-            )
-            for z in req.zones
-        ]
+        zone_monitors = zone_monitors_for(req.zones, self.zone_cfg)
         zone_polygons_px: list[list[tuple[int, int]]] = []
 
         # --- behavior state ---
@@ -425,21 +302,7 @@ class CombinedPipeline:
             event_seq += 1
             return f"evt_{event_seq}"
 
-        def save_evidence(frame_image, track_id, event_type, frame_index, bbox=None) -> str | None:
-            if evidence_dir is None or track_id is None:
-                return None
-            if bbox is not None:
-                x1, y1, x2, y2 = (max(0, v) for v in bbox)
-                crop = frame_image[y1:y2, x1:x2]
-            else:
-                crop = frame_image
-            if crop is None or crop.size == 0:
-                return None
-            fname = f"{track_id}_{event_type}_{frame_index}.jpg"
-            path = evidence_dir / fname
-            if cv2.imwrite(str(path), crop):
-                return str(path)
-            return None
+        evidence = partial(save_evidence, evidence_dir)
 
         with (reader if reader is not None else VideoReader(video_path)) as reader:
             writer = OutputVideoWriter(output_path, reader.info) if write_output else None
@@ -568,7 +431,7 @@ class CombinedPipeline:
                                     if req.snapshot_path is not None and not saved_snapshot:
                                         if cv2.imwrite(str(req.snapshot_path), crop):
                                             saved_snapshot = Path(req.snapshot_path)
-                                    save_evidence(frame.image, tid, "TARGET_CONFIRMED", frame.index, track.bbox)
+                                    evidence(frame.image, tid, "TARGET_CONFIRMED", frame.index, track.bbox)
 
                         # person ReID: identity MAINTENANCE -- what survives a turned-away
                         # face or occlusion, which face recognition alone cannot do.
@@ -693,7 +556,7 @@ class CombinedPipeline:
                                 if agg is not None:
                                     if agg.confirmed and tid not in plate_confirmed_seen:
                                         plate_confirmed_seen.add(tid)
-                                        all_events.append({"event_id": next_event_id(), "type": "PLATE_CONFIRMED", "track_id": tid, "frame_index": frame.index, "timestamp_sec": frame.timestamp_sec, "data": {"text": agg.text, "confidence": agg.mean_confidence}, "plate": agg.text, "confidence": agg.mean_confidence, "evidence_path": save_evidence(frame.image, tid, "PLATE_CONFIRMED", frame.index, track.bbox)})
+                                        all_events.append({"event_id": next_event_id(), "type": "PLATE_CONFIRMED", "track_id": tid, "frame_index": frame.index, "timestamp_sec": frame.timestamp_sec, "data": {"text": agg.text, "confidence": agg.mean_confidence}, "plate": agg.text, "confidence": agg.mean_confidence, "evidence_path": evidence(frame.image, tid, "PLATE_CONFIRMED", frame.index, track.bbox)})
                                 if anpr_lock is not None:
                                     # Compare the watchlist against this frame's raw reading and,
                                     # failing that, against the track's confirmed aggregate. A
@@ -743,23 +606,16 @@ class CombinedPipeline:
                             for ev in new_events:
                                 d = {"event_id": next_event_id(), "type": ev.type, "track_id": ev.track_id, "frame_index": ev.frame_index, "timestamp_sec": ev.timestamp_sec, "zone": zone.zone_id, "data": ev.data}
                                 if ev.type in ("ZONE_APPROACH", "ZONE_ENTRY", "ZONE_EXIT", "LONG_DWELL"):
-                                    d["evidence_path"] = save_evidence(frame.image, ev.track_id, ev.type, frame.index, tracks_by_id[ev.track_id].bbox if ev.track_id in tracks_by_id else None)
+                                    d["evidence_path"] = evidence(frame.image, ev.track_id, ev.type, frame.index, tracks_by_id[ev.track_id].bbox if ev.track_id in tracks_by_id else None)
                                 all_events.append(d)
-                                cname = "VEHICLE" if track_class.get(ev.track_id) in self.tracker_config.vehicle_class_ids else "PERSON"
-                                if ev.type == "ZONE_APPROACH":
-                                    eta = ev.data.get("eta_sec")
-                                    active_banners.append((["APPROACHING ZONE", f"{cname} #{ev.track_id}", f"Predicted entry in {eta}s" if eta else "Predicted entry"], ORANGE, frame.index + banner_frames))
-                                elif ev.type == "ZONE_ENTRY":
-                                    active_banners.append((["ZONE INTRUSION", f"{cname} #{ev.track_id}", format_timestamp(ev.timestamp_sec)], RED, frame.index + banner_frames))
-                                elif ev.type == "ZONE_EXIT":
-                                    active_banners.append((["ZONE EXIT", f"{cname} #{ev.track_id}", format_timestamp(ev.timestamp_sec)], (60, 200, 60), frame.index + banner_frames))
-                                elif ev.type == "LONG_DWELL":
-                                    active_banners.append((["LONG DWELL", f"{cname} #{ev.track_id}", f"Duration: {ev.data['duration_sec']:.1f} sec"], (0, 0, 200), frame.index + banner_frames))
+                                banner = zone_banner(ev, class_name(ev.track_id, track_class, self.tracker_config.vehicle_class_ids))
+                                if banner is not None:
+                                    active_banners.append((*banner, frame.index + banner_frames))
                                 if ev.type == "ZONE_ENTRY" and target_tid_shared is not None and ev.track_id == target_tid_shared:
                                     last = target_zone_intrusion_last.get(ev.track_id, -1e9)
                                     if ev.timestamp_sec - last >= self.behavior_cfg.behavior_cooldown_seconds:
                                         target_zone_intrusion_last[ev.track_id] = ev.timestamp_sec
-                                        all_events.append({"event_id": next_event_id(), "type": "TARGET_ZONE_INTRUSION", "track_id": ev.track_id, "frame_index": ev.frame_index, "timestamp_sec": ev.timestamp_sec, "zone": zone.zone_id, "data": {}, "evidence_path": save_evidence(frame.image, ev.track_id, "TARGET_ZONE_INTRUSION", frame.index, tracks_by_id[ev.track_id].bbox if ev.track_id in tracks_by_id else None)})
+                                        all_events.append({"event_id": next_event_id(), "type": "TARGET_ZONE_INTRUSION", "track_id": ev.track_id, "frame_index": ev.frame_index, "timestamp_sec": ev.timestamp_sec, "zone": zone.zone_id, "data": {}, "evidence_path": evidence(frame.image, ev.track_id, "TARGET_ZONE_INTRUSION", frame.index, tracks_by_id[ev.track_id].bbox if ev.track_id in tracks_by_id else None)})
                             for tid in tracks_by_id:
                                 if monitor.state_of(tid) == INSIDE:
                                     zone_inside_any[tid] = INSIDE
@@ -784,16 +640,12 @@ class CombinedPipeline:
                                     zone_id=zone_id_for_behavior, target_track_id=target_tid_shared,
                                 )
                         for ev in new_events:
-                            cname = "VEHICLE" if track_class.get(ev.track_id) in self.tracker_config.vehicle_class_ids else "PERSON"
-                            d = {"event_id": next_event_id(), "type": ev.type, "track_id": ev.track_id, "frame_index": ev.frame_index, "timestamp_sec": ev.timestamp_sec, "data": ev.data}
-                            d["evidence_path"] = save_evidence(frame.image, ev.track_id, ev.type, frame.index, tracks_by_id[ev.track_id].bbox if ev.track_id in tracks_by_id else None)
+                            cname = class_name(ev.track_id, track_class, self.tracker_config.vehicle_class_ids)
+                            d ={"event_id": next_event_id(), "type": ev.type, "track_id": ev.track_id, "frame_index": ev.frame_index, "timestamp_sec": ev.timestamp_sec, "data": ev.data}
+                            d["evidence_path"] = evidence(frame.image, ev.track_id, ev.type, frame.index, tracks_by_id[ev.track_id].bbox if ev.track_id in tracks_by_id else None)
                             all_events.append(d)
                             behavior_alert_until[ev.track_id] = frame.index + banner_frames
-                            if ev.type == "TARGET_BEHAVIOR_ALERT":
-                                lines = ["TARGET BEHAVIOR ALERT", f"{cname} #{ev.track_id}", ev.data["trigger_behavior"]]
-                            else:
-                                lines = ["BEHAVIOR ALERT", f"{_BEHAVIOR_LABEL[ev.type]} - {cname} #{ev.track_id}", format_timestamp(ev.timestamp_sec)]
-                            active_banners.append((lines, _BEHAVIOR_BANNER_COLOR[ev.type], frame.index + banner_frames))
+                            active_banners.append((*behavior_banner(ev, cname), frame.index + banner_frames))
 
                     was_tracking = bool(tracks_by_id) or (req.enable_person_id and bool(person_tracks_by_id))
 
@@ -822,20 +674,10 @@ class CombinedPipeline:
                         try:
                             req.observe_tracks(frame.image, seen)
                         except Exception:  # an observer must never stop analysis
-                            import logging
-                            logging.getLogger("backend.orchestrator").exception("track observer failed")
+                            logger.exception("track observer failed")
 
                     # ---------------- annotation ----------------
-                    for polygon_px, zone, monitor in zip(zone_polygons_px, req.zones, zone_monitors):
-                        breached = any(monitor.state_of(tid) == INSIDE for tid in tracks_by_id)
-                        nearing = not breached and any(monitor.approaching(tid) for tid in tracks_by_id)
-                        label = zone.label or "RESTRICTED ZONE"
-                        if breached:
-                            draw_polygon(frame.image, polygon_px, label=f"{label} - INTRUSION", color=RED)
-                        elif nearing:
-                            draw_polygon(frame.image, polygon_px, label=f"{label} - APPROACH", color=ORANGE)
-                        else:
-                            draw_polygon(frame.image, polygon_px, label=label)
+                    draw_zones(frame.image, zone_polygons_px, req.zones, zone_monitors, tracks_by_id)
 
                     drawn: set[int] = set()
                     if person_target_bbox is not None:
@@ -852,41 +694,15 @@ class CombinedPipeline:
                         drawn.add(anpr_target_tid)
 
                     if req.enable_person_id:
-                        self._draw_person_overlays(frame, person_lock, person_tracks_by_id, face_sightings, veto_streaks)
+                        draw_person_overlays(frame, person_lock, person_tracks_by_id, face_sightings, veto_streaks,
+                                             self.person_id_cfg)
 
+                    vehicle_ids = self.tracker_config.vehicle_class_ids
                     if req.enable_anpr and not req.target_plate:
-                        for tid, track in tracks_by_id.items():
-                            if tid in drawn or track.class_id not in self.tracker_config.vehicle_class_ids:
-                                continue
-                            agg = aggregator.aggregate(tid)
-                            if agg is None:
-                                continue
-                            label, thickness = _plate_box_style(agg)
-                            if agg.confirmed:
-                                draw_target_box(frame.image, track.bbox, label=label, color=CYAN, thickness=thickness)
-                                drawn.add(tid)
-                            else:
-                                # Read but not yet confirmed: shows ANPR is
-                                # working long before the vote completes.
-                                draw_thin_box(frame.image, track.bbox, CYAN, label=label[0], thickness=thickness)
-
-                    for tid in zone_inside_any:
-                        if tid in drawn or tid not in tracks_by_id:
-                            continue
-                        cname = "VEHICLE" if track_class.get(tid) in self.tracker_config.vehicle_class_ids else "PERSON"
-                        draw_target_box(frame.image, tracks_by_id[tid].bbox, label=f"{cname} #{tid}", color=ORANGE, thickness=2)
-                        drawn.add(tid)
-
-                    for tid, until in behavior_alert_until.items():
-                        if tid in drawn or frame.index >= until or tid not in tracks_by_id:
-                            continue
-                        cname = "VEHICLE" if track_class.get(tid) in self.tracker_config.vehicle_class_ids else "PERSON"
-                        draw_target_box(frame.image, tracks_by_id[tid].bbox, label=f"{cname} #{tid}", color=MAGENTA, thickness=2)
-                        drawn.add(tid)
-
-                    active_banners = [b for b in active_banners if b[2] > frame.index]
-                    for slot, (lines, color, _exp) in enumerate(active_banners):
-                        draw_banner(frame.image, lines, color, slot=slot)
+                        draw_auto_plates(frame.image, tracks_by_id, aggregator, drawn, vehicle_ids)
+                    draw_alert_boxes(frame.image, frame.index, tracks_by_id, drawn, zone_inside_any,
+                                     behavior_alert_until, track_class, vehicle_ids)
+                    active_banners = draw_banners(frame.image, active_banners, frame.index)
 
                     # TargetLock accumulates its confirm/lost/reacquire events
                     # internally; drain whatever it added during this frame so
@@ -894,16 +710,8 @@ class CombinedPipeline:
                     # unaffected: the same events are appended in the same
                     # per-frame order the trailing merge used to produce, and
                     # the final sort by frame_index is unchanged.
-                    if person_lock is not None:
-                        while person_lock_drained < len(person_lock.events):
-                            e = person_lock.events[person_lock_drained]
-                            person_lock_drained += 1
-                            all_events.append({"event_id": next_event_id(), "type": e.type, "track_id": e.track_id, "frame_index": e.frame_index, "timestamp_sec": e.timestamp_sec, "data": e.data})
-                    if anpr_lock is not None:
-                        while anpr_lock_drained < len(anpr_lock.events):
-                            e = anpr_lock.events[anpr_lock_drained]
-                            anpr_lock_drained += 1
-                            all_events.append({"event_id": next_event_id(), "type": e.type, "track_id": e.track_id, "frame_index": e.frame_index, "timestamp_sec": e.timestamp_sec, "data": e.data})
+                    person_lock_drained = drain_lock_events(person_lock, person_lock_drained, all_events, next_event_id)
+                    anpr_lock_drained = drain_lock_events(anpr_lock, anpr_lock_drained, all_events, next_event_id)
 
                     if writer is not None:
                         writer.write(frame.image)
@@ -931,20 +739,14 @@ class CombinedPipeline:
 
         # Drain any TargetLock events the loop did not reach - the tail after
         # the final frame, or everything at once if the loop never ran.
-        if person_lock is not None:
-            for e in person_lock.events[person_lock_drained:]:
-                all_events.append({"event_id": next_event_id(), "type": e.type, "track_id": e.track_id, "frame_index": e.frame_index, "timestamp_sec": e.timestamp_sec, "data": e.data})
-        if anpr_lock is not None:
-            for e in anpr_lock.events[anpr_lock_drained:]:
-                all_events.append({"event_id": next_event_id(), "type": e.type, "track_id": e.track_id, "frame_index": e.frame_index, "timestamp_sec": e.timestamp_sec, "data": e.data})
+        drain_lock_events(person_lock, person_lock_drained, all_events, next_event_id)
+        drain_lock_events(anpr_lock, anpr_lock_drained, all_events, next_event_id)
         all_events.sort(key=lambda d: d["frame_index"])
 
         person_id_summary = None
         if req.enable_person_id:
             person_id_summary = {
-                "confirmed": person_lock.confirmed, "target_track_id": person_lock.target_track_id,
-                "first_seen_sec": person_lock.first_seen_sec, "last_seen_sec": person_lock.last_seen_sec,
-                "visible_duration_sec": person_lock.visible_duration_sec, "visible_frame_count": person_lock.visible_frame_count,
+                **lock_summary(person_lock),
                 "reference_usable_count": reference_set.usable_count, "min_reference_votes_used": person_min_votes,
                 "snapshot_path": str(saved_snapshot) if saved_snapshot else None,
                 "face_inference_count": person_face_inference_count,
@@ -957,42 +759,12 @@ class CombinedPipeline:
 
         anpr_summary = None
         if req.enable_anpr:
-            detected_plates = [
-                {"track_id": tid, "text": agg.text, "mean_confidence": agg.mean_confidence, "observation_count": agg.observation_count, "confirmed": agg.confirmed}
-                for tid in aggregator.all_track_ids() if (agg := aggregator.aggregate(tid)) is not None
-            ]
-            target_summary = None
-            if anpr_lock is not None:
-                match_conf = None
-                if anpr_lock.target_track_id is not None:
-                    agg = aggregator.aggregate(anpr_lock.target_track_id)
-                    match_conf = agg.mean_confidence if agg else None
-                target_summary = {
-                    "found": anpr_lock.confirmed, "track_id": anpr_lock.target_track_id,
-                    "plate_text": normalized_target if anpr_lock.confirmed else None, "match_confidence": match_conf,
-                    "first_seen_sec": anpr_lock.first_seen_sec, "last_seen_sec": anpr_lock.last_seen_sec,
-                    "visible_duration_sec": anpr_lock.visible_duration_sec, "visible_frame_count": anpr_lock.visible_frame_count,
-                }
-            # Plate legibility is governed by how many pixels the plate itself
-            # covers, and a camera framed too wide produces plates that are
-            # found but unreadable at any processing resolution. Without this
-            # the run just reports "no plates confirmed", which looks like a
-            # broken reader rather than a camera that needs moving or zooming.
-            median_plate_width = None
-            legibility = None
-            if plate_widths:
-                ordered = sorted(plate_widths)
-                median_plate_width = ordered[len(ordered) // 2]
-                if median_plate_width < MIN_LEGIBLE_PLATE_WIDTH_PX:
-                    legibility = (
-                        f"plates are only ~{median_plate_width}px wide; "
-                        f"~{MIN_LEGIBLE_PLATE_WIDTH_PX}px is needed to read characters reliably. "
-                        "Move the camera closer, zoom in, or raise the analysis resolution."
-                    )
+            median_plate_width, legibility = legibility_warning(plate_widths)
             anpr_summary = {
                 "mode": "search" if normalized_target else "automatic",
-                "searched_plate": normalized_target, "target": target_summary,
-                "detected_plates": detected_plates, "vehicles_detected": len(vehicle_seen),
+                "searched_plate": normalized_target,
+                "target": anpr_target_summary(anpr_lock, aggregator, normalized_target),
+                "detected_plates": detected_plates(aggregator), "vehicles_detected": len(vehicle_seen),
                 "plates_localized": len(plate_localized_seen),
                 "median_plate_width_px": median_plate_width,
                 "legibility_warning": legibility,
@@ -1001,45 +773,18 @@ class CombinedPipeline:
                 "detector_backend": self.plate_detector.backend,
             }
 
-        zones_summary = None
-        if req.zones:
-            zones_summary = []
-            for zone, monitor in zip(req.zones, zone_monitors):
-                entries = sum(1 for e in monitor.events if e.type == "ZONE_ENTRY")
-                exits = sum(1 for e in monitor.events if e.type == "ZONE_EXIT")
-                dwells = sum(1 for e in monitor.events if e.type == "LONG_DWELL")
-                zones_summary.append({"zone_id": zone.zone_id, "label": zone.label, "entries": entries, "exits": exits, "dwell_events": dwells})
-
-        behavior_summary = None
-        if req.enable_behavior:
-            counts: dict[str, int] = {}
-            for e in behavior_monitor.events + (vehicle_behavior_monitor.events if vehicle_behavior_monitor else []):
-                counts[e.type] = counts.get(e.type, 0) + 1
-            behavior_summary = {"event_counts": counts, "tracks_observed": len(track_class),
-                                "units": "m" if vehicle_behavior_monitor else "px"}
-
-        lowlight_summary = None
-        if req.enable_lowlight:
-            total = video_info.frame_count or 1
-            lowlight_summary = {
-                "low_light_detected": low_light_frame_count > 0, "enhancement_applied": enhanced_frame_count > 0,
-                "backend": self.lowlight_cfg.backend, "low_light_frames": low_light_frame_count,
-                "enhanced_frames": enhanced_frame_count, "enhanced_percentage": round(100.0 * enhanced_frame_count / total, 2),
-            }
-
         return OrchestratorResult(
             output_video_path=Path(output_path) if output_path is not None else None,
             codec_used=writer.open_result.codec_used if writer is not None else "live",
             browser_playable=writer.open_result.browser_playable if writer is not None else True,
             video_info=video_info, metrics=metrics, events=all_events, modules_run=modules_run,
-            person_id=person_id_summary, anpr=anpr_summary, zones=zones_summary, behavior=behavior_summary, lowlight=lowlight_summary,
+            person_id=person_id_summary, anpr=anpr_summary,
+            zones=zones_summary(req.zones, zone_monitors) if req.zones else None,
+            behavior=(behavior_summary(behavior_monitor, vehicle_behavior_monitor, len(track_class))
+                      if req.enable_behavior else None),
+            lowlight=(lowlight_summary(self.lowlight_cfg.backend, video_info.frame_count,
+                                       low_light_frame_count, enhanced_frame_count)
+                      if req.enable_lowlight else None),
             evidence_dir=evidence_dir,
         )
 
-
-def _plate_box_style(agg) -> tuple[list[str], int]:
-    """(label lines, thickness): a confirmed plate gets the full box, a
-    provisional read a thin one marked '?'."""
-    if agg.confirmed:
-        return [agg.text, f"{round(agg.mean_confidence)}%"], 3
-    return [f"{agg.text} ?"], 1

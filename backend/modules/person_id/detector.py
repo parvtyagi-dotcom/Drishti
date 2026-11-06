@@ -14,7 +14,7 @@ class FaceDetection:
     confidence: float
     raw: np.ndarray  # full YuNet row (bbox + 5 landmarks + score), needed by SFace alignCrop
     # Width in the caller's original pixels, when the image was enlarged
-    # before detection (see orchestrator._find_face); else the bbox width.
+    # before detection (see face_search._find_face); else the bbox width.
     width_px: float = 0.0
 
     def __post_init__(self):

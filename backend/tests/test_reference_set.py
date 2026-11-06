@@ -104,7 +104,7 @@ def test_arcface_matches_the_same_person_and_rejects_another(detector):
 
 
 def test_a_face_is_found_in_a_sideways_person_crop(detector):
-    from backend.orchestrator import _find_face
+    from backend.modules.person_id.face_search import _find_face
 
     crop = cv2.rotate(cv2.imread(str(TARGET_REF1)), cv2.ROTATE_90_CLOCKWISE)
     image, face = _find_face(detector, crop)
